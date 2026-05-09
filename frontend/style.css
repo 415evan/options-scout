@@ -221,6 +221,88 @@ html, body {
 .signal-tag { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; white-space: nowrap; background: var(--bg3); color: var(--text2); border: 1px solid var(--border2); }
 .no-options { text-align: center; color: var(--text3); padding: 40px 20px; font-size: 14px; }
 
+/* Position sizing */
+.header-btn { padding: 5px 12px !important; font-size: 12px !important; }
+.position-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  background: linear-gradient(90deg, var(--blue-dim), transparent);
+  padding: 10px 16px; font-size: 13px; color: var(--text);
+  border-bottom: 1px solid var(--border2);
+}
+.position-banner button { padding: 4px 12px !important; font-size: 12px !important; }
+.sizing-col { color: var(--blue) !important; }
+.sizing-set .sizing-cell { color: var(--text); font-weight: 600; }
+.sizing-set .max-loss-cell { color: var(--red); }
+.sizing-set .breakeven-cell { color: var(--yellow); }
+.sizing-set .target-cell { color: var(--green); }
+.sizing-empty { color: var(--text3); font-size: 11px; }
+.contracts-pill {
+  display: inline-block; background: var(--blue-dim); color: var(--blue);
+  font-weight: 700; padding: 2px 9px; border-radius: 10px; font-size: 12px;
+}
+.contracts-zero { background: var(--bg3); color: var(--text3); }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; backdrop-filter: blur(4px);
+}
+.modal {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); width: 440px; max-width: 90vw;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border2);
+}
+.modal-head h3 { font-size: 16px; }
+.modal-close {
+  background: none; border: none; color: var(--text2);
+  font-size: 24px; cursor: pointer; line-height: 1; padding: 0 4px;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 20px; }
+.modal-hint { color: var(--text2); font-size: 13px; margin-bottom: 18px; line-height: 1.5; }
+
+.field { display: block; margin-bottom: 16px; }
+.field > span:first-child {
+  display: block; font-size: 12px; font-weight: 600;
+  color: var(--text2); margin-bottom: 6px; letter-spacing: .03em;
+}
+.field input[type="number"] {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font-size: 14px;
+  padding: 8px 12px; outline: none;
+}
+.field input[type="number"]:focus { border-color: var(--blue); }
+.field input[type="range"] { width: 100%; accent-color: var(--blue); }
+.field small { display: block; font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+.input-prefix {
+  display: flex; align-items: center;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden;
+}
+.input-prefix:focus-within { border-color: var(--blue); }
+.input-prefix > span {
+  padding: 8px 10px; color: var(--text2);
+  background: var(--bg); font-weight: 600; font-size: 13px;
+}
+.input-prefix input {
+  background: transparent !important; border: none !important;
+  flex: 1; padding: 8px 12px !important;
+}
+
+.modal-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border2);
+}
+.modal-actions button { padding: 8px 18px; font-size: 13px; font-weight: 600; border-radius: 6px; cursor: pointer; border: none; }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover { opacity: .85; }
+
 /* News */
 .news-card { margin-top: 16px; }
 .news-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }

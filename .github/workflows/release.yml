@@ -5,6 +5,9 @@ on:
     tags: ['v*']
   workflow_dispatch:        # allow manual trigger from GitHub UI
 
+permissions:
+  contents: write           # allow electron-builder to create/update GitHub releases
+
 jobs:
   build:
     name: Build (${{ matrix.os }})

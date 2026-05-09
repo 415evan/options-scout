@@ -2,6 +2,63 @@
 
 const $ = id => document.getElementById(id);
 
+// ── Portfolio settings (localStorage) ─────────────────────────────────────────
+const SETTINGS_KEY = 'optionsScoutPortfolio';
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }
+  catch { return {}; }
+}
+function saveSettings(s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
+let SETTINGS = loadSettings();
+
+function updatePortfolioBtnText() {
+  const t = $('portfolioBtnText');
+  if (!t) return;
+  if (SETTINGS.portfolioValue && SETTINGS.buyingPower) {
+    t.textContent = '$' + (SETTINGS.buyingPower >= 1000 ? (SETTINGS.buyingPower/1000).toFixed(1)+'K' : SETTINGS.buyingPower) + ' BP';
+  } else {
+    t.textContent = 'Portfolio';
+  }
+}
+
+function openPortfolioModal() {
+  $('setPortfolio').value   = SETTINGS.portfolioValue || '';
+  $('setBuyingPower').value = SETTINGS.buyingPower || '';
+  $('setRiskPct').value     = SETTINGS.riskPct || 2;
+  $('riskPctLabel').textContent = (SETTINGS.riskPct || 2) + '%';
+  $('portfolioModal').classList.remove('hidden');
+}
+function closePortfolioModal() { $('portfolioModal').classList.add('hidden'); }
+function savePortfolio() {
+  const pv = parseFloat($('setPortfolio').value) || 0;
+  const bp = parseFloat($('setBuyingPower').value) || 0;
+  const rp = parseFloat($('setRiskPct').value)   || 2;
+  SETTINGS = { portfolioValue: pv, buyingPower: bp, riskPct: rp };
+  saveSettings(SETTINGS);
+  closePortfolioModal();
+  updatePortfolioBtnText();
+  // Re-render last results if dashboard is showing
+  if (window._lastAnalysis) renderOptions(window._lastAnalysis.top_calls, window._lastAnalysis.current_price);
+}
+
+function isPortfolioSet() {
+  return SETTINGS.portfolioValue > 0 && SETTINGS.buyingPower > 0;
+}
+
+// Position sizing math for a long call
+function computePosition(opt) {
+  if (!isPortfolioSet() || !opt.ask || opt.ask <= 0) return null;
+  const costPerContract = opt.ask * 100; // each contract = 100 shares
+  const maxRiskDollars  = SETTINGS.portfolioValue * (SETTINGS.riskPct / 100);
+  const byRisk = Math.floor(maxRiskDollars / costPerContract);
+  const byBP   = Math.floor(SETTINGS.buyingPower / costPerContract);
+  const contracts = Math.max(0, Math.min(byRisk, byBP));
+  const totalCost = contracts * costPerContract;
+  const breakeven = opt.strike + opt.ask;
+  const target2x  = opt.strike + opt.ask * 2;  // stock price where premium ≈ doubles
+  return { contracts, totalCost, maxLoss: totalCost, breakeven, target2x, costPerContract };
+}
+
 function showOnly(id) {
   ['welcomeScreen','loadingScreen','errorScreen','dashboard','batchScreen'].forEach(s => {
     $(s).classList.toggle('hidden', s !== id);
@@ -42,6 +99,9 @@ const scoreTier = s => s >= 70 ? 'score-high' : (s >= 45 ? 'score-mid' : 'score-
 function renderOptions(calls, currentPrice) {
   const tbody = $('optsBody');
   tbody.innerHTML = '';
+  // Show/hide the "set portfolio" banner
+  $('positionBanner').classList.toggle('hidden', isPortfolioSet());
+
   if (!calls || !calls.length) {
     $('noOptions').classList.remove('hidden');
     $('optCount').textContent = '0 found';
@@ -53,12 +113,35 @@ function renderOptions(calls, currentPrice) {
   calls.forEach((opt, i) => {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
+    if (isPortfolioSet()) tr.classList.add('sizing-set');
+
     const dteClass = opt.dte <= 1 ? 'dte-urgent' : (opt.dte > 7 ? 'dte-longer' : 'dte-good');
     const tier = scoreTier(opt.score);
     const barPct = Math.min(Math.round(opt.score / 120 * 100), 100);
     const sigHtml = (opt.reasons || []).slice(0, 4).map(r => `<span class="signal-tag">${r}</span>`).join('');
     const otmPct = ((opt.strike - currentPrice) / currentPrice * 100).toFixed(1);
     const otmStr = opt.itm ? `<span class="itm-badge">ITM</span>` : `<span style="font-size:11px;color:var(--text3)">${otmPct}%</span>`;
+
+    // Position sizing
+    const pos = computePosition(opt);
+    let buyCell, costCell, lossCell, beCell, targetCell;
+    if (!pos) {
+      const empty = '<span class="sizing-empty">—</span>';
+      buyCell = costCell = lossCell = beCell = targetCell = empty;
+    } else if (pos.contracts === 0) {
+      buyCell    = `<span class="contracts-pill contracts-zero">0</span>`;
+      costCell   = `<span class="sizing-empty">too costly</span>`;
+      lossCell   = `<span class="sizing-empty">${fmt$(pos.costPerContract)}/ea</span>`;
+      beCell     = `<span class="breakeven-cell">${fmt$(pos.breakeven)}</span>`;
+      targetCell = `<span class="target-cell">${fmt$(pos.target2x)}</span>`;
+    } else {
+      buyCell    = `<span class="contracts-pill">${pos.contracts}×</span>`;
+      costCell   = `<span class="sizing-cell">${fmt$(pos.totalCost)}</span>`;
+      lossCell   = `<span class="max-loss-cell">−${fmt$(pos.maxLoss)}</span>`;
+      beCell     = `<span class="breakeven-cell">${fmt$(pos.breakeven)}</span>`;
+      targetCell = `<span class="target-cell">${fmt$(pos.target2x)}</span>`;
+    }
+
     tr.innerHTML = `
       <td>${i+1}</td>
       <td><span class="strike-val">${fmt$(opt.strike)}</span> ${otmStr}</td>
@@ -71,6 +154,11 @@ function renderOptions(calls, currentPrice) {
       <td>${fmtVol(opt.open_interest)}</td>
       <td style="color:${opt.iv>80?'var(--red)':opt.iv>50?'var(--yellow)':'var(--text2)'}">${opt.iv}%</td>
       <td><div class="score-cell ${tier}"><span class="score-num">${opt.score}</span><div class="score-bar-track"><div class="score-bar-fill" style="width:${barPct}%"></div></div></div></td>
+      <td>${buyCell}</td>
+      <td>${costCell}</td>
+      <td>${lossCell}</td>
+      <td>${beCell}</td>
+      <td>${targetCell}</td>
       <td><div class="signals-cell">${sigHtml}</div></td>`;
     tbody.appendChild(tr);
   });
@@ -149,6 +237,7 @@ async function analyze(ticker) {
     if (!data.support_levels?.length) sl.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:4px">None detected</div>';
 
     if (data.volume) renderVolume(data.volume);
+    window._lastAnalysis = data;
     renderOptions(data.top_calls, data.current_price);
     showDashboard();
 
@@ -264,5 +353,14 @@ dz.addEventListener('click', () => $('watchlistFile').click());
 ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('drag-over'); }));
 dz.addEventListener('drop', e => { e.preventDefault(); handleWatchlistFile(e.dataTransfer.files[0]); });
 
+// Portfolio button + slider
+$('portfolioBtn').addEventListener('click', openPortfolioModal);
+$('portfolioModal').addEventListener('click', e => { if (e.target.id === 'portfolioModal') closePortfolioModal(); });
+$('setRiskPct').addEventListener('input', e => { $('riskPctLabel').textContent = e.target.value + '%'; });
+window.openPortfolioModal = openPortfolioModal;
+window.closePortfolioModal = closePortfolioModal;
+window.savePortfolio = savePortfolio;
+
+updatePortfolioBtnText();
 updateMarketBadge();
 setInterval(updateMarketBadge, 60000);

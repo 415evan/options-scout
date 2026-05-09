@@ -29,9 +29,54 @@
 
   <div class="header-meta">
     <span id="updateBadge" class="update-badge hidden"></span>
+    <button id="portfolioBtn" class="btn-secondary header-btn" title="Set portfolio for position sizing">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><line x1="12" y1="6" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span id="portfolioBtnText">Portfolio</span>
+    </button>
     <span id="marketBadge" class="market-badge">● Loading…</span>
   </div>
 </header>
+
+<!-- Portfolio settings modal -->
+<div id="portfolioModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Portfolio &amp; Position Sizing</h3>
+      <button class="modal-close" onclick="closePortfolioModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Set these once and the app will calculate how many contracts to buy and your estimated P&amp;L for every option.</p>
+
+      <label class="field">
+        <span>Total Portfolio Value</span>
+        <div class="input-prefix">
+          <span>$</span>
+          <input id="setPortfolio" type="number" min="0" step="100" placeholder="50000" />
+        </div>
+      </label>
+
+      <label class="field">
+        <span>Available Buying Power</span>
+        <div class="input-prefix">
+          <span>$</span>
+          <input id="setBuyingPower" type="number" min="0" step="100" placeholder="10000" />
+        </div>
+        <small>How much cash you can deploy on a single trade.</small>
+      </label>
+
+      <label class="field">
+        <span>Risk per Trade <span id="riskPctLabel">2%</span></span>
+        <input id="setRiskPct" type="range" min="0.5" max="10" step="0.5" value="2" />
+        <small>Standard guidance: 1–2%. Never risk more than you can afford to lose.</small>
+      </label>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closePortfolioModal()">Cancel</button>
+        <button class="btn-primary" onclick="savePortfolio()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <section id="welcomeScreen" class="welcome-screen">
   <div class="welcome-inner">
@@ -156,11 +201,21 @@
           <span id="optCount" class="count-badge">0 found</span>
         </div>
         <div class="card-body no-pad">
+          <div id="positionBanner" class="position-banner hidden">
+            <span>💡 Set your portfolio to see how many contracts to buy and your P&amp;L</span>
+            <button class="btn-secondary" onclick="openPortfolioModal()">Set Portfolio →</button>
+          </div>
           <div class="table-scroll">
             <table class="opts-table">
               <thead><tr>
                 <th>#</th><th>STRIKE</th><th>EXPIRY</th><th>DTE</th><th>BID</th><th>ASK</th>
-                <th>MID</th><th>VOLUME</th><th>OI</th><th>IV %</th><th>SCORE</th><th>SIGNALS</th>
+                <th>MID</th><th>VOLUME</th><th>OI</th><th>IV %</th><th>SCORE</th>
+                <th class="sizing-col">BUY</th>
+                <th class="sizing-col">COST</th>
+                <th class="sizing-col">MAX LOSS</th>
+                <th class="sizing-col">BREAKEVEN</th>
+                <th class="sizing-col">2× AT</th>
+                <th>SIGNALS</th>
               </tr></thead>
               <tbody id="optsBody"></tbody>
             </table>
