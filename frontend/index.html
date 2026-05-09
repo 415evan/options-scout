@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Options Scout</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="header">
+  <div class="header-brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>
+    </svg>
+    <span>Options<strong>Scout</strong></span>
+    <span id="appVersion" class="version-tag"></span>
+  </div>
+
+  <div class="search-bar">
+    <input id="tickerInput" type="text" placeholder="Enter ticker — AAPL, SPY, TSLA…" autocomplete="off" spellcheck="false" />
+    <button id="analyzeBtn">Analyze</button>
+    <button id="watchlistBtn" class="btn-secondary" title="Import TradingView watchlist">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Watchlist
+    </button>
+    <input type="file" id="watchlistFile" accept=".txt,.csv" style="display:none" />
+  </div>
+
+  <div class="header-meta">
+    <span id="updateBadge" class="update-badge hidden"></span>
+    <span id="marketBadge" class="market-badge">● Loading…</span>
+  </div>
+</header>
+
+<section id="welcomeScreen" class="welcome-screen">
+  <div class="welcome-inner">
+    <h1>Find This Week's Best Call Options</h1>
+    <p>Ranked by key levels, support &amp; resistance, volume, and live news.</p>
+    <div class="quick-tickers">
+      <span class="qt-label">Quick:</span>
+      <button class="qt-btn" data-t="SPY">SPY</button>
+      <button class="qt-btn" data-t="QQQ">QQQ</button>
+      <button class="qt-btn" data-t="AAPL">AAPL</button>
+      <button class="qt-btn" data-t="NVDA">NVDA</button>
+      <button class="qt-btn" data-t="TSLA">TSLA</button>
+      <button class="qt-btn" data-t="MSFT">MSFT</button>
+      <button class="qt-btn" data-t="AMD">AMD</button>
+    </div>
+
+    <div class="watchlist-hint">
+      <h3>Or scan your TradingView watchlist</h3>
+      <p>In TradingView, click your watchlist menu (⋮) → <strong>Export Watchlist</strong>. Drop the <code>.txt</code> file below.</p>
+      <div id="dropzone" class="dropzone">
+        <span>Drop watchlist file here</span>
+        <small>or click to browse</small>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="loadingScreen" class="loading-screen hidden">
+  <div class="spinner"></div>
+  <p id="loadingMsg">Fetching market data…</p>
+</section>
+
+<section id="errorScreen" class="error-screen hidden">
+  <div class="error-inner">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="1.5">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+    <h3>Could not load data</h3>
+    <p id="errorMsg"></p>
+    <button onclick="showWelcome()">Try again</button>
+  </div>
+</section>
+
+<!-- Batch results screen -->
+<section id="batchScreen" class="batch-screen hidden">
+  <div class="batch-head">
+    <div>
+      <h2>Watchlist Scan</h2>
+      <p id="batchSubtitle">Ranking your tickers by best call-option score…</p>
+    </div>
+    <button class="btn-secondary" onclick="showWelcome()">← Back</button>
+  </div>
+  <div class="card">
+    <div class="card-head">Results <span id="batchCount" class="count-badge">—</span></div>
+    <div class="card-body no-pad">
+      <div id="batchProgress" class="batch-progress"></div>
+      <table class="opts-table batch-table">
+        <thead><tr>
+          <th>#</th><th>TICKER</th><th>COMPANY</th><th>PRICE</th>
+          <th>BEST STRIKE</th><th>EXPIRY</th><th>DTE</th><th>MID</th>
+          <th>VOLUME</th><th>VOL SIGNAL</th><th>SCORE</th><th>SIGNALS</th><th></th>
+        </tr></thead>
+        <tbody id="batchBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<main id="dashboard" class="dashboard hidden">
+  <div class="summary-strip">
+    <div class="sstat"><span class="sstat-label">TICKER</span><span class="sstat-val ticker-display" id="st-ticker">—</span></div>
+    <div class="sstat"><span class="sstat-label">PRICE</span><span class="sstat-val" id="st-price">—</span></div>
+    <div class="sstat wide"><span class="sstat-label">COMPANY</span><span class="sstat-val" id="st-company">—</span></div>
+    <div class="sstat"><span class="sstat-label">52W HIGH</span><span class="sstat-val green" id="st-52h">—</span></div>
+    <div class="sstat"><span class="sstat-label">52W LOW</span><span class="sstat-val red" id="st-52l">—</span></div>
+    <div class="sstat"><span class="sstat-label">AVG VOL</span><span class="sstat-val" id="st-avgvol">—</span></div>
+    <div class="sstat"><span class="sstat-label">MARKET CAP</span><span class="sstat-val" id="st-mktcap">—</span></div>
+  </div>
+
+  <div class="layout">
+    <aside class="panel-left">
+      <div class="card">
+        <div class="card-head">Key Levels</div>
+        <div class="card-body levels-body">
+          <div class="levels-group">
+            <div class="levels-label resist-label">RESISTANCE</div>
+            <div id="resistList" class="levels-list"></div>
+          </div>
+          <div class="current-line">
+            <span class="current-dot"></span>
+            <span id="currentPriceLine">$—</span>
+            <span class="current-tag">CURRENT</span>
+          </div>
+          <div class="levels-group">
+            <div class="levels-label support-label">SUPPORT</div>
+            <div id="supportList" class="levels-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">Volume Analysis</div>
+        <div class="card-body">
+          <div class="vol-stats">
+            <div class="vol-stat"><span class="vol-stat-label">Today</span><span class="vol-stat-val" id="volToday">—</span></div>
+            <div class="vol-stat"><span class="vol-stat-label">Avg (30d)</span><span class="vol-stat-val" id="volAvg">—</span></div>
+            <div class="vol-stat"><span class="vol-stat-label">Signal</span><span class="vol-stat-val" id="volSignal">—</span></div>
+          </div>
+          <div class="vol-bar-wrap">
+            <div class="vol-bar-track"><div id="volBar" class="vol-bar"></div></div>
+            <div class="vol-bar-labels"><span>0</span><span>Avg</span><span>2×</span></div>
+          </div>
+          <div id="volSparkline" class="vol-sparkline"></div>
+        </div>
+      </div>
+    </aside>
+
+    <section class="panel-right">
+      <div class="card full-height">
+        <div class="card-head">
+          Top Call Options — This Week
+          <span id="optCount" class="count-badge">0 found</span>
+        </div>
+        <div class="card-body no-pad">
+          <div class="table-scroll">
+            <table class="opts-table">
+              <thead><tr>
+                <th>#</th><th>STRIKE</th><th>EXPIRY</th><th>DTE</th><th>BID</th><th>ASK</th>
+                <th>MID</th><th>VOLUME</th><th>OI</th><th>IV %</th><th>SCORE</th><th>SIGNALS</th>
+              </tr></thead>
+              <tbody id="optsBody"></tbody>
+            </table>
+          </div>
+          <div id="noOptions" class="no-options hidden">No tradeable call options found this week.</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="card news-card">
+    <div class="card-head">Live News <span id="newsCount" class="count-badge">—</span></div>
+    <div class="card-body">
+      <div id="newsGrid" class="news-grid"></div>
+      <div id="noNews" class="no-news hidden">No recent news found.</div>
+    </div>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+node_modules/
+release/
+dist/
+build/output/
+backend/build/
+backend/dist/
+backend/*.spec
+backend/__pycache__/
+backend/.venv/
+*.pyc
+.DS_Store
+.env
+*.log
