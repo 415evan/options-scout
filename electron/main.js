@@ -59,7 +59,8 @@ async function startBackend() {
   if (isPackaged) {
     // Production: use bundled standalone binary (Python embedded inside)
     const binDir = path.join(process.resourcesPath, 'backend-bin');
-    cmd = path.join(binDir, 'optionsscout-backend');
+    const exeName = process.platform === 'win32' ? 'optionsscout-backend.exe' : 'optionsscout-backend';
+    cmd = path.join(binDir, exeName);
     args = [];
     cwd = binDir;
   } else {
