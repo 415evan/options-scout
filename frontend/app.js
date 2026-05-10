@@ -430,6 +430,209 @@ if (window.electronAPI) {
   });
 }
 
+// ── Morning check ─────────────────────────────────────────────────────────────
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+
+function checkMorning() {
+  if (!SETTINGS.portfolioValue) return; // no portfolio set yet
+  if (SETTINGS.lastConfirmedDate === todayStr()) return; // already confirmed today
+  $('morningPortfolioVal').textContent = '$' + Number(SETTINGS.portfolioValue).toLocaleString();
+  $('morningBuyingPower').value = SETTINGS.buyingPower || '';
+  $('morningModal').classList.remove('hidden');
+}
+
+function skipMorningCheck() {
+  SETTINGS.lastConfirmedDate = todayStr();
+  saveSettings(SETTINGS);
+  $('morningModal').classList.add('hidden');
+}
+
+function saveMorningCheck() {
+  const bp = parseFloat($('morningBuyingPower').value) || SETTINGS.buyingPower || 0;
+  SETTINGS.buyingPower = bp;
+  SETTINGS.lastConfirmedDate = todayStr();
+  saveSettings(SETTINGS);
+  $('morningModal').classList.add('hidden');
+  updatePortfolioBtnText();
+  if (window._lastAnalysis) renderOptions(window._lastAnalysis.top_calls, window._lastAnalysis.current_price);
+}
+
+window.skipMorningCheck = skipMorningCheck;
+window.saveMorningCheck = saveMorningCheck;
+
+// ── Trade log ─────────────────────────────────────────────────────────────────
+const TRADES_KEY = 'optionsScoutTrades';
+let _exitingTradeId = null;
+
+function loadTrades() {
+  try { return JSON.parse(localStorage.getItem(TRADES_KEY)) || []; }
+  catch { return []; }
+}
+function saveTrades(t) { localStorage.setItem(TRADES_KEY, JSON.stringify(t)); }
+
+function openTradeLog() {
+  renderTradeLog();
+  $('tradeLogModal').classList.remove('hidden');
+}
+function closeTradeLog() { $('tradeLogModal').classList.add('hidden'); }
+
+function openLogEntry(prefill) {
+  $('le-ticker').value   = prefill?.ticker   || '';
+  $('le-strike').value   = prefill?.strike   || '';
+  $('le-expiry').value   = prefill?.expiry   || '';
+  $('le-price').value    = prefill?.ask      || '';
+  $('le-contracts').value = 1;
+  $('le-date').value     = todayStr();
+  $('le-notes').value    = '';
+  $('logEntryModal').classList.remove('hidden');
+}
+function closeLogEntry() { $('logEntryModal').classList.add('hidden'); }
+
+function saveLogEntry() {
+  const ticker    = $('le-ticker').value.trim().toUpperCase();
+  const strike    = parseFloat($('le-strike').value);
+  const expiry    = $('le-expiry').value;
+  const contracts = parseInt($('le-contracts').value) || 1;
+  const price     = parseFloat($('le-price').value);
+  const date      = $('le-date').value || todayStr();
+  const notes     = $('le-notes').value.trim();
+
+  if (!ticker || !strike || !price) { alert('Ticker, strike, and price are required.'); return; }
+
+  const trades = loadTrades();
+  trades.push({ id: Date.now(), ticker, strike, expiry, contracts, entryPrice: price, entryDate: date, notes, status: 'open' });
+  saveTrades(trades);
+  closeLogEntry();
+  renderTradeLog();
+  updateTradesBtnBadge();
+}
+
+function openLogExit(id) {
+  const trade = loadTrades().find(t => t.id === id);
+  if (!trade) return;
+  _exitingTradeId = id;
+  $('logExitTitle').textContent = `Close ${trade.ticker} $${trade.strike} × ${trade.contracts}`;
+  $('logExitDesc').textContent  = `Entry: $${trade.entryPrice}/share · Cost: $${(trade.entryPrice * 100 * trade.contracts).toFixed(2)}`;
+  $('le-exit-price').value = '';
+  $('le-exit-date').value  = todayStr();
+  $('logExitPnl').classList.add('hidden');
+  $('logExitModal').classList.remove('hidden');
+
+  $('le-exit-price').addEventListener('input', previewExitPnl);
+}
+function closeLogExit() { $('logExitModal').classList.add('hidden'); _exitingTradeId = null; }
+
+function previewExitPnl() {
+  const trades = loadTrades();
+  const trade  = trades.find(t => t.id === _exitingTradeId);
+  if (!trade) return;
+  const exitP  = parseFloat($('le-exit-price').value);
+  if (!exitP) { $('logExitPnl').classList.add('hidden'); return; }
+  const pnl = (exitP - trade.entryPrice) * 100 * trade.contracts;
+  const el  = $('logExitPnl');
+  el.textContent = `P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+  el.className   = 'exit-pnl-preview' + (pnl >= 0 ? ' pnl-win' : ' pnl-loss');
+  el.classList.remove('hidden');
+}
+
+function saveLogExit() {
+  const exitPrice = parseFloat($('le-exit-price').value);
+  const exitDate  = $('le-exit-date').value || todayStr();
+  if (!exitPrice) { alert('Enter an exit price.'); return; }
+
+  const trades = loadTrades();
+  const idx    = trades.findIndex(t => t.id === _exitingTradeId);
+  if (idx === -1) return;
+  const trade  = trades[idx];
+  const pnl    = (exitPrice - trade.entryPrice) * 100 * trade.contracts;
+  trades[idx]  = { ...trade, exitPrice, exitDate, pnl, status: 'closed' };
+  saveTrades(trades);
+  closeLogExit();
+  renderTradeLog();
+  updateTradesBtnBadge();
+}
+
+function renderTradeLog() {
+  const trades  = loadTrades();
+  const open    = trades.filter(t => t.status === 'open');
+  const closed  = trades.filter(t => t.status === 'closed');
+
+  $('openCount').textContent   = open.length;
+  $('closedCount').textContent = closed.length;
+
+  // Open trades
+  const ob = $('openTradesBody'); ob.innerHTML = '';
+  $('noOpenTrades').classList.toggle('hidden', open.length > 0);
+  open.forEach(t => {
+    const cost = (t.entryPrice * 100 * t.contracts).toFixed(2);
+    const tr   = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong style="color:var(--blue)">${t.ticker}</strong></td>
+      <td>${fmt$(t.strike)}</td>
+      <td>${t.expiry || '—'}</td>
+      <td>${t.contracts}</td>
+      <td>${fmt$(t.entryPrice)}/sh</td>
+      <td style="font-weight:600">$${cost}</td>
+      <td style="color:var(--text3)">${t.entryDate}</td>
+      <td style="color:var(--text2);font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis">${t.notes || '—'}</td>
+      <td><button class="btn-secondary" style="padding:3px 10px;font-size:11px" data-exit="${t.id}">Exit →</button></td>`;
+    ob.appendChild(tr);
+  });
+  ob.querySelectorAll('[data-exit]').forEach(b => b.addEventListener('click', () => openLogExit(Number(b.dataset.exit))));
+
+  // Closed trades
+  const cb = $('closedTradesBody'); cb.innerHTML = '';
+  $('noClosedTrades').classList.toggle('hidden', closed.length > 0);
+  let totalPnl = 0, wins = 0;
+  const pnls = closed.map(t => t.pnl || 0);
+  closed.forEach(t => {
+    totalPnl += t.pnl || 0;
+    if ((t.pnl || 0) > 0) wins++;
+    const win = (t.pnl || 0) >= 0;
+    const tr  = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong style="color:var(--blue)">${t.ticker}</strong></td>
+      <td>${fmt$(t.strike)}</td>
+      <td>${t.expiry || '—'}</td>
+      <td>${t.contracts}</td>
+      <td>${fmt$(t.entryPrice)}/sh</td>
+      <td>${fmt$(t.exitPrice)}/sh</td>
+      <td style="font-weight:700;color:${win ? 'var(--green)' : 'var(--red)'}">${win ? '+' : ''}$${(t.pnl||0).toFixed(2)}</td>
+      <td><span class="conviction-badge ${win ? 'conv-strong' : 'conv-speculative'}">${win ? 'WIN' : 'LOSS'}</span></td>
+      <td style="color:var(--text3)">${t.exitDate || '—'}</td>`;
+    cb.appendChild(tr);
+  });
+
+  // Summary
+  if (closed.length > 0) {
+    $('tradeSummary').classList.remove('hidden');
+    const winRate = Math.round(wins / closed.length * 100);
+    $('ts-pnl').textContent   = (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2);
+    $('ts-pnl').className     = 'tsstat-val ' + (totalPnl >= 0 ? 'green' : 'red');
+    $('ts-wr').textContent    = winRate + '% (' + wins + '/' + closed.length + ')';
+    $('ts-count').textContent = closed.length + ' closed, ' + open.length + ' open';
+    const best  = Math.max(...pnls); const worst = Math.min(...pnls);
+    $('ts-best').textContent  = '+$' + best.toFixed(2);
+    $('ts-worst').textContent = '$' + worst.toFixed(2);
+  } else {
+    $('tradeSummary').classList.add('hidden');
+  }
+}
+
+function updateTradesBtnBadge() {
+  const open = loadTrades().filter(t => t.status === 'open').length;
+  $('tradesBtnText').textContent = open > 0 ? `Trades (${open})` : 'Trades';
+}
+
+window.openTradeLog  = openTradeLog;
+window.closeTradeLog = closeTradeLog;
+window.openLogEntry  = openLogEntry;
+window.closeLogEntry = closeLogEntry;
+window.saveLogEntry  = saveLogEntry;
+window.openLogExit   = openLogExit;
+window.closeLogExit  = closeLogExit;
+window.saveLogExit   = saveLogExit;
+
 // ── Wire up ──────────────────────────────────────────────────────────────────
 $('analyzeBtn').addEventListener('click', () => analyze($('tickerInput').value));
 $('tickerInput').addEventListener('keydown', e => { if (e.key === 'Enter') analyze($('tickerInput').value); });
@@ -455,9 +658,13 @@ window.openPortfolioModal = openPortfolioModal;
 window.closePortfolioModal = closePortfolioModal;
 window.savePortfolio = savePortfolio;
 
+$('tradesBtn').addEventListener('click', openTradeLog);
+
 updatePortfolioBtnText();
+updateTradesBtnBadge();
 updateMarketBadge();
 setInterval(updateMarketBadge, 60000);
 
-// Kick off best picks on launch
+// Kick off best picks on launch, then morning check after a short delay
 loadBestPicks();
+setTimeout(checkMorning, 1500);
