@@ -503,9 +503,11 @@ if (window.electronAPI) {
   });
   window.electronAPI.onUpdateDownloaded(info => {
     const b = $('updateBadge');
-    b.textContent = `✓ v${info.version} ready — click to restart`;
+    b.innerHTML = `✓ v${info.version} ready — <u style="cursor:pointer" id="installBtn">restart</u> · <u style="cursor:pointer" id="dlBtn">download manually</u>`;
     b.classList.remove('hidden');
-    b.onclick = () => window.electronAPI.installUpdate();
+    b.onclick = null;
+    $('installBtn').onclick = e => { e.stopPropagation(); window.electronAPI.installUpdate(); };
+    $('dlBtn').onclick = e => { e.stopPropagation(); window.electronAPI.openReleasePage(); };
   });
 }
 

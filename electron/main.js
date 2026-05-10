@@ -145,8 +145,16 @@ ipcMain.handle('updater:install', () => {
     try { pythonProc.kill('SIGTERM'); } catch {}
     pythonProc = null;
   }
-  // isSilent=true: no NSIS UI popup; isForceRunAfter=true: relaunch after install
-  autoUpdater.quitAndInstall(true, true);
+  try {
+    autoUpdater.quitAndInstall(true, true);
+  } catch (e) {
+    log.error('quitAndInstall failed, opening releases page:', e);
+    shell.openExternal('https://github.com/415evan/options-scout/releases/latest');
+  }
+});
+
+ipcMain.handle('app:open-releases', () => {
+  shell.openExternal('https://github.com/415evan/options-scout/releases/latest');
 });
 
 // ── App lifecycle ────────────────────────────────────────────────────────────
