@@ -93,9 +93,23 @@ let _nextRefreshAt = 0;
 
 const convictionClass = c => c === 'Strong' ? 'conv-strong' : c === 'High' ? 'conv-high' : c === 'Moderate' ? 'conv-moderate' : 'conv-speculative';
 
+function renderSectorHeat(sectorPerf) {
+  const bar = $('sectorHeatBar');
+  if (!sectorPerf) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const entries = Object.entries(sectorPerf).sort((a, b) => b[1] - a[1]);
+  bar.innerHTML = entries.map(([sec, ret]) => {
+    const cls = ret >= 2 ? 'heat-hot' : ret >= 0.5 ? 'heat-warm' : ret >= -0.5 ? 'heat-flat' : 'heat-cold';
+    const sign = ret >= 0 ? '+' : '';
+    return `<div class="heat-chip ${cls}" title="${sec}">${sec.replace('Consumer ','').replace(' Disc','CD').replace(' Market','')}<span>${sign}${ret.toFixed(1)}%</span></div>`;
+  }).join('');
+}
+
 function renderBestPicks(data) {
   const tbody = $('picksBody');
   tbody.innerHTML = '';
+
+  renderSectorHeat(data.sector_perf);
 
   const updated = data.updated_at ? new Date(data.updated_at * 1000) : new Date();
   const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -105,19 +119,20 @@ function renderBestPicks(data) {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
 
-    const dteClass = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 21 ? 'dte-swing' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
-    const confPct  = Math.min(pick.confidence, 100);
+    const dteClass  = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 21 ? 'dte-swing' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
+    const confPct   = Math.min(pick.confidence, 100);
     const confColor = confPct >= 80 ? 'var(--green)' : confPct >= 65 ? 'var(--blue)' : confPct >= 50 ? 'var(--yellow)' : 'var(--text3)';
-    const sigHtml  = (pick.signals || []).map(s => `<span class="signal-tag">${s}</span>`).join('');
-    const otmStr   = pick.itm ? `<span class="itm-badge">ITM</span>` : '';
-    // Cheap play: show how many contracts $500 buys
+    const otmStr    = pick.itm ? `<span class="itm-badge">ITM</span>` : '';
     const contractsFor500 = pick.ask > 0 ? Math.floor(500 / (pick.ask * 100)) : 0;
-    const cheapTag = contractsFor500 >= 5 ? `<span class="cheap-tag">${contractsFor500}× for $500</span>` : '';
+    const cheapTag  = contractsFor500 >= 5 ? `<span class="cheap-tag">${contractsFor500}× for $500</span>` : '';
+    const sectorRet = pick.sector_return || 0;
+    const sectorCls = sectorRet >= 2 ? 'heat-hot' : sectorRet >= 0.5 ? 'heat-warm' : sectorRet >= -0.5 ? 'heat-flat' : 'heat-cold';
+    const sectorSign = sectorRet >= 0 ? '+' : '';
 
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td><strong style="color:var(--blue);font-size:14px">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
-      <td style="color:var(--text2);max-width:160px;overflow:hidden;text-overflow:ellipsis">${pick.company_name || ''}</td>
+      <td><strong style="color:var(--blue);font-size:13px">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
+      <td><span class="heat-chip ${sectorCls}" style="font-size:10px">${pick.sector || ''}<span style="margin-left:4px">${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
       <td style="color:var(--text2)">${pick.expiry}</td>
@@ -130,7 +145,7 @@ function renderBestPicks(data) {
         </div>
       </td>
       <td><span class="conviction-badge ${convictionClass(pick.conviction)}">${pick.conviction}</span></td>
-      <td><div class="signals-cell">${sigHtml}</div></td>
+      <td style="max-width:200px;font-size:11px;color:var(--text2);white-space:normal;line-height:1.3">${pick.conviction_reason || ''}</td>
       <td><button class="btn-secondary picks-drill-btn" data-t="${pick.ticker}">Details →</button></td>`;
     tbody.appendChild(tr);
   });

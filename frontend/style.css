@@ -73,6 +73,23 @@ html, body {
 }
 .update-badge:hover { opacity: .85; }
 
+/* Sector heat bar */
+.sector-heat-bar {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border2);
+  background: var(--bg);
+}
+.heat-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 700; padding: 3px 8px;
+  border-radius: 10px; white-space: nowrap; letter-spacing: .02em;
+}
+.heat-chip span { font-weight: 600; }
+.heat-hot  { background: rgba(63,185,80,.18);  color: var(--green); }
+.heat-warm { background: rgba(56,139,253,.15);  color: var(--blue); }
+.heat-flat { background: var(--bg3);            color: var(--text3); border: 1px solid var(--border2); }
+.heat-cold { background: rgba(248,81,73,.15);   color: var(--red); }
+
 /* Picks screen */
 .picks-screen { padding: 24px; display: flex; flex-direction: column; gap: 24px; min-height: calc(100vh - 56px); }
 .picks-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }

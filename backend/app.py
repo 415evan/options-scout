@@ -262,24 +262,152 @@ def analyze_ticker(ticker):
     }
 
 
-# ─── Best Picks ───────────────────────────────────────────────────────────────
+# ─── Best Picks — full sector-aware scanner ───────────────────────────────────
 
-SCAN_TICKERS = [
-    'SPY','QQQ','AAPL','NVDA','MSFT','TSLA','AMD','AMZN',
-    'META','GOOGL','COIN','PLTR','MSTR','NFLX','IWM',
-    'BAC','JPM','GLD','SOFI','HOOD',
-]
-PICKS_TTL = 60  # seconds
+SECTOR_ETFS = {
+    'Technology':        'XLK',
+    'Semiconductors':    'SMH',
+    'Financials':        'XLF',
+    'Energy':            'XLE',
+    'Healthcare':        'XLV',
+    'Industrials':       'XLI',
+    'Communication':     'XLC',
+    'Consumer Disc':     'XLY',
+    'Consumer Staples':  'XLP',
+    'Materials':         'XLB',
+    'Utilities':         'XLU',
+    'Real Estate':       'XLRE',
+}
 
-_picks_cache = {'data': None, 'ts': 0, 'refreshing': False}
-_picks_lock  = threading.Lock()
+SECTOR_TICKERS = {
+    'Technology': [
+        'AAPL','MSFT','NVDA','AMD','AVGO','INTC','QCOM','TXN','AMAT','LRCX',
+        'MU','KLAC','MRVL','ADI','NXPI','ON','MPWR','SWKS','MCHP',
+        'CRM','ORCL','NOW','INTU','ADBE','SNOW','PANW','CRWD','PLTR',
+        'NET','DDOG','FTNT','ZS','WDAY','TEAM','ANSS','CDNS','SNPS',
+        'IBM','DELL','HPQ','HPE','STX','WDC','NTAP',
+    ],
+    'Semiconductors': [
+        'NVDA','AMD','AVGO','INTC','QCOM','MU','AMAT','LRCX','KLAC','TXN',
+        'ADI','MRVL','NXPI','ON','MPWR','SWKS','MCHP','SLAB','WOLF','MTSI',
+        'ACLS','ONTO','COHU','AZTA','RMBS',
+    ],
+    'Communication': [
+        'META','GOOGL','GOOG','NFLX','DIS','CMCSA','T','VZ','TMUS','CHTR',
+        'SNAP','PINS','RDDT','PARA','FOXA','WBD','MTCH','IAC',
+    ],
+    'Consumer Disc': [
+        'AMZN','TSLA','HD','MCD','NKE','SBUX','TGT','LOW','CMG','BKNG',
+        'ABNB','MAR','HLT','WYNN','MGM','LVS','F','GM','RIVN','LCID',
+        'TJX','ROST','ULTA','BBY','ETSY','EBAY','W','RH',
+        'DHI','LEN','PHM','TOL','NVR','POOL','TREX',
+    ],
+    'Consumer Staples': [
+        'WMT','PG','KO','PEP','COST','MDLZ','MO','PM','CL','EL',
+        'CHD','KHC','GIS','CAG','SJM','CPB','KR','HSY','MKC',
+    ],
+    'Financials': [
+        'JPM','BAC','GS','MS','WFC','C','BLK','SCHW','AXP','V','MA',
+        'PYPL','COF','DFS','USB','PNC','TFC','KEY','RF','FITB','HBAN',
+        'MTB','CFG','ALLY','SYF','HOOD','COIN','MSTR','SQ','SOFI',
+        'ICE','CME','NDAQ','CBOE','SPGI','MCO','MSCI',
+    ],
+    'Healthcare': [
+        'JNJ','UNH','LLY','PFE','ABBV','MRK','BMY','AMGN','GILD','BIIB',
+        'REGN','VRTX','HCA','CNC','CVS','CI','ISRG','MDT','ABT','SYK',
+        'EW','TMO','DHR','A','ILMN','MRNA','BNTX','NVAX','SRPT','ALNY',
+        'INCY','EXEL','HALO','ACAD','RARE',
+    ],
+    'Energy': [
+        'XOM','CVX','COP','EOG','SLB','HAL','DVN','MPC','PSX','VLO',
+        'OXY','FANG','BKR','KMI','WMB','OKE','LNG','AR','RRC','EQT',
+        'CTRA','MRO','APA','NOG','SM','MTDR',
+    ],
+    'Industrials': [
+        'CAT','DE','HON','GE','BA','LMT','RTX','NOC','GD','TDG','AXON',
+        'ROP','ITW','EMR','ETN','PH','MMM','UPS','FDX','DAL','UAL',
+        'AAL','LUV','CSX','NSC','UNP','CARR','OTIS','JCI','IR','XYL',
+        'PWR','HUBB','AME','ROK','GNRC','ACHR','JOBY',
+    ],
+    'Materials': [
+        'LIN','APD','ECL','PPG','NEM','FCX','CTVA','DOW','DD','NUE',
+        'CLF','X','AA','MP','GOLD','KGC','AEM','PAAS',
+    ],
+    'Real Estate': [
+        'AMT','PLD','EQIX','CCI','WELL','SPG','O','DLR','PSA','EQR',
+        'AVB','VTR','ARE','BXP','KIM','REG',
+    ],
+    'Utilities': [
+        'NEE','SO','DUK','D','AEP','EXC','SRE','PCG','ES','FE',
+        'ETR','XEL','WEC','CMS','EVRG',
+    ],
+    'Broad Market': [
+        'SPY','QQQ','IWM','DIA','GLD','SLV','TLT','HYG','GDX','GDXJ',
+        'XLK','XLF','XLE','XLV','XLI','XLC','XLY','SMH','SOXX',
+    ],
+}
+
+PICKS_TTL = 90   # seconds — longer because we scan more tickers
+
+_picks_cache     = {'data': None, 'ts': 0, 'refreshing': False}
+_picks_lock      = threading.Lock()
+_sector_cache    = {'perf': None, 'ts': 0}
+_sector_lock     = threading.Lock()
+SECTOR_CACHE_TTL = 1800  # 30 min
 
 
-def compute_confidence(score, vol_signal, reasons):
-    base = min(score / 1.15, 80.0)
-    if vol_signal == 'High':     base += 12
+def get_sector_performance():
+    with _sector_lock:
+        if _sector_cache['perf'] and (time.time() - _sector_cache['ts']) < SECTOR_CACHE_TTL:
+            return _sector_cache['perf']
+
+    perf = {}
+    for sector, etf in SECTOR_ETFS.items():
+        try:
+            hist = yf.Ticker(etf).history(period='5d')
+            if len(hist) >= 2:
+                ret = (float(hist['Close'].iloc[-1]) / float(hist['Close'].iloc[0]) - 1) * 100
+                perf[sector] = round(ret, 2)
+            else:
+                perf[sector] = 0.0
+        except Exception:
+            perf[sector] = 0.0
+
+    perf = dict(sorted(perf.items(), key=lambda x: x[1], reverse=True))
+    with _sector_lock:
+        _sector_cache['perf'] = perf
+        _sector_cache['ts']   = time.time()
+    return perf
+
+
+def build_scan_list(sector_perf):
+    """Return ~70 tickers weighted toward hot sectors, deduplicated."""
+    ranked = list(sector_perf.keys())
+    # Slots: top sector 14, 2nd 12, 3rd 10, 4th 8, rest 4, broad market always
+    slots  = [14, 12, 10, 8, 4, 4, 4, 3, 3, 3, 3, 3]
+    seen, result = set(), []
+
+    for i, sector in enumerate(ranked):
+        n = slots[i] if i < len(slots) else 3
+        for t in SECTOR_TICKERS.get(sector, [])[:n]:
+            if t not in seen:
+                seen.add(t); result.append((t, sector))
+
+    for t in SECTOR_TICKERS.get('Broad Market', []):
+        if t not in seen:
+            seen.add(t); result.append((t, 'Broad Market'))
+
+    return result
+
+
+def compute_confidence(score, vol_signal, reasons, sector_ret=0.0):
+    base = min(score / 1.15, 78.0)
+    if vol_signal == 'High':      base += 12
     elif vol_signal == 'Elevated': base += 6
     base += min(len(reasons) * 2, 10)
+    # Hot sector bonus
+    if sector_ret >= 3:   base += 8
+    elif sector_ret >= 1: base += 4
     return min(round(base), 95)
 
 
@@ -290,33 +418,59 @@ def conviction_label(conf):
     return 'Speculative'
 
 
-def _scan_one(ticker):
+def conviction_reason(top, sector, sector_ret, vol_signal):
+    """One short sentence explaining the top reason for conviction."""
+    reasons = top.get('reasons', [])
+    ask = top.get('ask', 0)
+
+    if sector_ret >= 3:
+        return f'Hot sector: {sector} +{sector_ret:.1f}% this week'
+    if ask > 0 and ask <= 1.50:
+        n = int(1000 / (ask * 100))
+        return f'Cheap entry — ~{n}× contracts for $1,000'
+    if any('support' in r.lower() for r in reasons):
+        return 'Price sitting on key support level'
+    if vol_signal == 'High':
+        return 'Volume surge — unusual buying activity'
+    if any('V/OI' in r for r in reasons):
+        return 'High options flow relative to open interest'
+    if any('ATM' in r for r in reasons):
+        return 'At-the-money — maximum gamma exposure'
+    if sector_ret >= 1:
+        return f'{sector} sector momentum +{sector_ret:.1f}%'
+    return reasons[0] if reasons else 'Multiple technical signals aligned'
+
+
+def _scan_one_with_sector(ticker, sector, sector_ret):
     try:
         r = analyze_ticker(ticker)
         if r.get('error') or not r.get('top_calls'):
             return None
         top     = r['top_calls'][0]
         vol_sig = r['volume']['signal']
-        conf    = compute_confidence(top['score'], vol_sig, top['reasons'])
+        conf    = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret)
         return {
-            'ticker':       ticker,
-            'company_name': r['company_name'],
-            'current_price': r['current_price'],
-            'strike':  top['strike'],
-            'expiry':  top['expiry'],
-            'dte':     top['dte'],
-            'bid':     top['bid'],
-            'ask':     top['ask'],
-            'mid':     top['mid'],
-            'volume':  top['volume'],
-            'open_interest': top['open_interest'],
-            'iv':      top['iv'],
-            'score':   top['score'],
-            'confidence': conf,
-            'conviction': conviction_label(conf),
-            'signals': top['reasons'][:4],
-            'volume_signal': vol_sig,
-            'itm': top.get('itm', False),
+            'ticker':          ticker,
+            'company_name':    r['company_name'],
+            'current_price':   r['current_price'],
+            'sector':          sector,
+            'sector_return':   sector_ret,
+            'strike':          top['strike'],
+            'expiry':          top['expiry'],
+            'dte':             top['dte'],
+            'bid':             top['bid'],
+            'ask':             top['ask'],
+            'mid':             top['mid'],
+            'volume':          top['volume'],
+            'open_interest':   top['open_interest'],
+            'iv':              top['iv'],
+            'score':           top['score'],
+            'confidence':      conf,
+            'conviction':      conviction_label(conf),
+            'conviction_reason': conviction_reason(top, sector, sector_ret, vol_sig),
+            'signals':         top['reasons'][:4],
+            'volume_signal':   vol_sig,
+            'itm':             top.get('itm', False),
         }
     except Exception as e:
         logger.warning('picks scan %s: %s', ticker, e)
@@ -324,18 +478,25 @@ def _scan_one(ticker):
 
 
 def _do_refresh():
+    sector_perf = get_sector_performance()
+    scan_list   = build_scan_list(sector_perf)
+    logger.info('Scanning %d tickers across %d sectors', len(scan_list), len(SECTOR_ETFS))
+
     results = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(_scan_one, t): t for t in SCAN_TICKERS}
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futs = {ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0)): t
+                for t, sec in scan_list}
         for fut in as_completed(futs):
             r = fut.result()
             if r:
                 results.append(r)
+
     results.sort(key=lambda x: x['confidence'], reverse=True)
     out = {
-        'picks':      results[:10],
-        'scanned':    len(SCAN_TICKERS),
-        'updated_at': time.time(),
+        'picks':        results[:15],
+        'scanned':      len(scan_list),
+        'sector_perf':  sector_perf,
+        'updated_at':   time.time(),
     }
     with _picks_lock:
         _picks_cache['data']       = out

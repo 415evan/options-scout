@@ -217,18 +217,20 @@
       </div>
     </div>
 
+    <div id="sectorHeatBar" class="sector-heat-bar hidden"></div>
+
     <div id="picksLoading" class="picks-loading">
       <div class="spinner"></div>
-      <p>Scanning markets — this takes ~20 seconds on first load…</p>
+      <p>Scanning markets across all sectors — takes ~20 seconds on first load…</p>
     </div>
 
     <div id="picksTable" class="hidden">
       <div class="table-scroll">
         <table class="opts-table picks-table">
           <thead><tr>
-            <th>#</th><th>TICKER</th><th>COMPANY</th><th>PRICE</th>
+            <th>#</th><th>TICKER</th><th>SECTOR</th><th>PRICE</th>
             <th>STRIKE</th><th>EXPIRY</th><th>DTE</th><th>MID</th>
-            <th>CONFIDENCE</th><th>CONVICTION</th><th>SIGNALS</th><th></th>
+            <th>CONFIDENCE</th><th>CONVICTION</th><th>WHY</th><th></th>
           </tr></thead>
           <tbody id="picksBody"></tbody>
         </table>
