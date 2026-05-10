@@ -89,10 +89,10 @@ async function startBackend() {
 // ── Window creation ──────────────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1100,
-    minHeight: 700,
+    width: 1200,
+    height: 860,
+    minWidth: 860,
+    minHeight: 640,
     backgroundColor: '#0d1117',
     titleBarStyle: 'hiddenInset',
     title: 'Options Scout',
