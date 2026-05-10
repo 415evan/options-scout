@@ -240,6 +240,8 @@ html, body {
 .dte-urgent { background: var(--red-dim); color: var(--red); }
 .dte-good { background: var(--green-dim); color: var(--green); }
 .dte-longer { background: var(--yellow-dim); color: var(--yellow); }
+.dte-swing { background: rgba(139,92,246,.18); color: #a78bfa; }
+.cheap-tag { display: inline-block; font-size: 9px; font-weight: 700; background: rgba(63,185,80,.15); color: var(--green); border-radius: 3px; padding: 1px 5px; margin-left: 4px; letter-spacing: .03em; }
 .score-cell { display: flex; align-items: center; gap: 6px; }
 .score-num { font-weight: 700; font-size: 13px; min-width: 28px; }
 .score-bar-track { width: 50px; height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden; }

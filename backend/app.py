@@ -107,27 +107,39 @@ def score_call(opt, current_price, supports, resistances, dte):
 
     score, reasons = 0, []
 
+    # ── Moneyness ────────────────────────────────────────────────────────────
     otm_pct = (strike - current_price) / current_price * 100
-    if -1 <= otm_pct <= 2:   score += 30; reasons.append('ATM strike')
-    elif 2 < otm_pct <= 5:   score += 24; reasons.append(f'{otm_pct:.1f}% OTM')
-    elif 5 < otm_pct <= 10:  score += 14; reasons.append(f'{otm_pct:.1f}% OTM')
-    elif -5 <= otm_pct < -1: score += 18; reasons.append(f'ITM {abs(otm_pct):.1f}%')
-    else: score += 4
+    if   -1 <= otm_pct <= 2:    score += 30; reasons.append('ATM strike')
+    elif  2 < otm_pct <=  5:    score += 24; reasons.append(f'{otm_pct:.1f}% OTM')
+    elif  5 < otm_pct <= 10:    score += 16; reasons.append(f'{otm_pct:.1f}% OTM')
+    elif 10 < otm_pct <= 20:    score += 10; reasons.append(f'{otm_pct:.1f}% OTM (lottery)')
+    elif -5 <= otm_pct < -1:    score += 18; reasons.append(f'ITM {abs(otm_pct):.1f}%')
+    else:                        score += 5
 
-    if 2 <= dte <= 5:    score += 20; reasons.append(f'{dte}d expiry (optimal weekly)')
-    elif dte == 1:       score += 10; reasons.append('1d expiry (high gamma)')
-    elif 5 < dte <= 10:  score += 14; reasons.append(f'{dte}d expiry')
-    elif 10 < dte <= 21: score += 8;  reasons.append(f'{dte}d expiry')
+    # ── DTE ──────────────────────────────────────────────────────────────────
+    if   2 <= dte <= 5:   score += 20; reasons.append(f'{dte}d expiry (optimal weekly)')
+    elif dte == 1:        score += 10; reasons.append('1d expiry (high gamma)')
+    elif  5 < dte <= 10:  score += 16; reasons.append(f'{dte}d expiry')
+    elif 10 < dte <= 21:  score += 12; reasons.append(f'{dte}d expiry')
+    elif 21 < dte <= 45:  score += 8;  reasons.append(f'{dte}d expiry (swing)')
 
+    # ── Cheap premium bonus (more contracts, lottery upside) ─────────────────
+    if   ask <= 0.50: score += 18; reasons.append(f'Cheap premium ${ask:.2f}')
+    elif ask <= 1.50: score += 12; reasons.append(f'Low premium ${ask:.2f}')
+    elif ask <= 3.00: score +=  6; reasons.append(f'Affordable ${ask:.2f}')
+
+    # ── Volume ────────────────────────────────────────────────────────────────
     if   vol >= 2000: score += 25; reasons.append(f'Vol {vol:,} (very active)')
     elif vol >= 500:  score += 18; reasons.append(f'Vol {vol:,}')
     elif vol >= 100:  score += 10; reasons.append(f'Vol {vol:,}')
-    elif vol > 0:     score += 3
+    elif vol > 0:     score +=  3
 
+    # ── Open interest ─────────────────────────────────────────────────────────
     if   oi >= 10000: score += 18; reasons.append(f'OI {oi:,} (deep liquid)')
     elif oi >= 2000:  score += 12; reasons.append(f'OI {oi:,}')
-    elif oi >= 500:   score += 6;  reasons.append(f'OI {oi:,}')
+    elif oi >= 500:   score +=  6; reasons.append(f'OI {oi:,}')
 
+    # ── Support / resistance proximity ────────────────────────────────────────
     for lvl in supports:
         prox = abs(current_price - lvl['price']) / current_price
         if prox < 0.025:
@@ -142,16 +154,19 @@ def score_call(opt, current_price, supports, resistances, dte):
             score += 10
             reasons.append(f"Strike at resistance ${lvl['price']}"); break
 
+    # ── Spread quality ────────────────────────────────────────────────────────
     mid = (bid + ask) / 2
     sp  = (ask - bid) / mid if mid > 0 else 1
     if sp < 0.08:   score += 10; reasons.append('Tight spread')
-    elif sp < 0.15: score += 5
-    elif sp > 0.40: score -= 8;  reasons.append('Wide spread')
+    elif sp < 0.15: score +=  5
+    elif sp > 0.40: score -=  8; reasons.append('Wide spread')
 
-    if iv > 2.0:     score -= 15; reasons.append('Very high IV')
-    elif iv > 1.2:   score -= 5;  reasons.append('Elevated IV')
-    elif 0.2 <= iv <= 0.7: score += 8; reasons.append('Reasonable IV')
+    # ── IV ────────────────────────────────────────────────────────────────────
+    if   iv > 2.0:            score -= 15; reasons.append('Very high IV')
+    elif iv > 1.2:            score -=  5; reasons.append('Elevated IV')
+    elif 0.2 <= iv <= 0.7:    score +=  8; reasons.append('Reasonable IV')
 
+    # ── V/OI momentum ─────────────────────────────────────────────────────────
     if oi > 0 and (vol / oi) > 0.2:
         score += 8; reasons.append('High V/OI ratio')
 
@@ -194,19 +209,19 @@ def analyze_ticker(ticker):
 
     today = datetime.now()
     best_calls = []
-    for ds in exp_dates[:5]:
+    for ds in exp_dates[:10]:
         exp = datetime.strptime(ds, '%Y-%m-%d')
         dte = (exp - today).days
-        if dte < 0 or dte > 21: continue
+        if dte < 0 or dte > 45: continue
         try:
             chain = stock.option_chain(ds).calls
             if chain.empty: continue
-            chain = chain[(chain['strike'] >= current_price * 0.85) & (chain['strike'] <= current_price * 1.15)]
+            chain = chain[(chain['strike'] >= current_price * 0.80) & (chain['strike'] <= current_price * 1.22)]
             for _, row in chain.iterrows():
                 res = score_call(row.to_dict(), current_price, supports, resistances, dte)
                 if not res: continue
                 sc, reasons = res
-                if sc < 15: continue
+                if sc < 12: continue
                 bid = float(row.get('bid', 0) or 0); ask = float(row.get('ask', 0) or 0)
                 best_calls.append({
                     'strike': float(row['strike']), 'expiry': ds, 'dte': dte,

@@ -105,15 +105,18 @@ function renderBestPicks(data) {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
 
-    const dteClass = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
+    const dteClass = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 21 ? 'dte-swing' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
     const confPct  = Math.min(pick.confidence, 100);
     const confColor = confPct >= 80 ? 'var(--green)' : confPct >= 65 ? 'var(--blue)' : confPct >= 50 ? 'var(--yellow)' : 'var(--text3)';
     const sigHtml  = (pick.signals || []).map(s => `<span class="signal-tag">${s}</span>`).join('');
     const otmStr   = pick.itm ? `<span class="itm-badge">ITM</span>` : '';
+    // Cheap play: show how many contracts $500 buys
+    const contractsFor500 = pick.ask > 0 ? Math.floor(500 / (pick.ask * 100)) : 0;
+    const cheapTag = contractsFor500 >= 5 ? `<span class="cheap-tag">${contractsFor500}× for $500</span>` : '';
 
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td><strong style="color:var(--blue);font-size:14px">${pick.ticker}</strong>${otmStr}</td>
+      <td><strong style="color:var(--blue);font-size:14px">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
       <td style="color:var(--text2);max-width:160px;overflow:hidden;text-overflow:ellipsis">${pick.company_name || ''}</td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
