@@ -83,12 +83,44 @@ html, body {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 10px; font-weight: 700; padding: 3px 8px;
   border-radius: 10px; white-space: nowrap; letter-spacing: .02em;
+  cursor: pointer; transition: outline .1s;
 }
 .heat-chip span { font-weight: 600; }
 .heat-hot  { background: rgba(63,185,80,.18);  color: var(--green); }
 .heat-warm { background: rgba(56,139,253,.15);  color: var(--blue); }
 .heat-flat { background: var(--bg3);            color: var(--text3); border: 1px solid var(--border2); }
 .heat-cold { background: rgba(248,81,73,.15);   color: var(--red); }
+.heat-chip.heat-active { outline: 2px solid currentColor; filter: brightness(1.25); }
+
+/* Sector filter indicator */
+.sector-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 14px; background: var(--blue-dim);
+  border-bottom: 1px solid var(--border2);
+  font-size: 12px; color: var(--blue);
+}
+.sector-filter-bar button {
+  background: none; border: 1px solid var(--blue); color: var(--blue);
+  border-radius: 4px; padding: 1px 8px; cursor: pointer; font-size: 11px;
+}
+.sector-filter-bar button:hover { background: rgba(56,139,253,.12); }
+
+/* Small sector chip for table rows */
+.sec-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 9px; font-weight: 700; padding: 2px 5px;
+  border-radius: 8px; white-space: nowrap;
+}
+.sec-chip span { font-weight: 500; }
+
+/* Picks table — compact to fit screen */
+.picks-table td, .picks-table th { padding: 5px 5px; }
+.picks-table .conf-bar-sm { width: 36px !important; }
+.picks-table .why-cell {
+  max-width: 150px; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis;
+  font-size: 11px; color: var(--text2);
+}
 
 /* Picks screen */
 .picks-screen { padding: 24px; display: flex; flex-direction: column; gap: 24px; min-height: calc(100vh - 56px); }

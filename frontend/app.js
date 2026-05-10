@@ -90,49 +90,85 @@ function showBatch() { showOnly('batchScreen'); }
 let _picksTimer = null;
 let _countdownTimer = null;
 let _nextRefreshAt = 0;
+let _allPicks = [];
+let _activeSector = null;
+let _lastSectorPerf = null;
 
 const convictionClass = c => c === 'Strong' ? 'conv-strong' : c === 'High' ? 'conv-high' : c === 'Moderate' ? 'conv-moderate' : 'conv-speculative';
 
+const SECTOR_SHORT = {
+  'Consumer Discretionary': 'Cons.D', 'Consumer Staples': 'Cons.S',
+  'Communication': 'Comm', 'Technology': 'Tech', 'Healthcare': 'Health',
+  'Financials': 'Fin', 'Industrials': 'Indust', 'Semiconductors': 'Semi',
+  'Broad Market': 'Broad', 'Materials': 'Mater', 'Utilities': 'Util',
+  'Real Estate': 'RE', 'Energy': 'Energy'
+};
+const shortSector = s => SECTOR_SHORT[s] || s;
+
 function renderSectorHeat(sectorPerf) {
+  if (sectorPerf) _lastSectorPerf = sectorPerf;
+  const sp = _lastSectorPerf;
   const bar = $('sectorHeatBar');
-  if (!sectorPerf) { bar.classList.add('hidden'); return; }
+  if (!sp) { bar.classList.add('hidden'); return; }
   bar.classList.remove('hidden');
-  const entries = Object.entries(sectorPerf).sort((a, b) => b[1] - a[1]);
+  const entries = Object.entries(sp).sort((a, b) => b[1] - a[1]);
   bar.innerHTML = entries.map(([sec, ret]) => {
     const cls = ret >= 2 ? 'heat-hot' : ret >= 0.5 ? 'heat-warm' : ret >= -0.5 ? 'heat-flat' : 'heat-cold';
     const sign = ret >= 0 ? '+' : '';
-    return `<div class="heat-chip ${cls}" title="${sec}">${sec.replace('Consumer ','').replace(' Disc','CD').replace(' Market','')}<span>${sign}${ret.toFixed(1)}%</span></div>`;
+    const active = _activeSector === sec ? ' heat-active' : '';
+    return `<div class="heat-chip${active} ${cls}" data-sector="${sec}" title="Click to filter ${sec}">${shortSector(sec)}<span>${sign}${ret.toFixed(1)}%</span></div>`;
   }).join('');
+
+  bar.querySelectorAll('.heat-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const sec = chip.dataset.sector;
+      _activeSector = _activeSector === sec ? null : sec;
+      renderPicksTable(_activeSector ? _allPicks.filter(p => p.sector === _activeSector) : _allPicks);
+      renderSectorHeat(null);
+      renderFilterBar();
+    });
+  });
 }
 
-function renderBestPicks(data) {
+function renderFilterBar() {
+  const bar = $('sectorFilterBar');
+  if (!bar) return;
+  if (_activeSector) {
+    bar.innerHTML = `<span>Showing: <strong>${_activeSector}</strong></span><button onclick="clearSectorFilter()">× Clear</button>`;
+    bar.classList.remove('hidden');
+  } else {
+    bar.classList.add('hidden');
+  }
+}
+
+function clearSectorFilter() {
+  _activeSector = null;
+  renderPicksTable(_allPicks);
+  renderSectorHeat(null);
+  renderFilterBar();
+}
+window.clearSectorFilter = clearSectorFilter;
+
+function renderPicksTable(picks) {
   const tbody = $('picksBody');
   tbody.innerHTML = '';
-
-  renderSectorHeat(data.sector_perf);
-
-  const updated = data.updated_at ? new Date(data.updated_at * 1000) : new Date();
-  const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  $('picksStatus').textContent = `${data.picks.length} picks from ${data.scanned} tickers — last scan ${timeStr}${data.stale ? ' (refreshing…)' : ''}`;
-
-  data.picks.forEach((pick, i) => {
+  picks.forEach((pick, i) => {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
-
     const dteClass  = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 21 ? 'dte-swing' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
     const confPct   = Math.min(pick.confidence, 100);
     const confColor = confPct >= 80 ? 'var(--green)' : confPct >= 65 ? 'var(--blue)' : confPct >= 50 ? 'var(--yellow)' : 'var(--text3)';
     const otmStr    = pick.itm ? `<span class="itm-badge">ITM</span>` : '';
     const contractsFor500 = pick.ask > 0 ? Math.floor(500 / (pick.ask * 100)) : 0;
-    const cheapTag  = contractsFor500 >= 5 ? `<span class="cheap-tag">${contractsFor500}× for $500</span>` : '';
+    const cheapTag  = contractsFor500 >= 5 ? `<span class="cheap-tag">${contractsFor500}×$500</span>` : '';
     const sectorRet = pick.sector_return || 0;
     const sectorCls = sectorRet >= 2 ? 'heat-hot' : sectorRet >= 0.5 ? 'heat-warm' : sectorRet >= -0.5 ? 'heat-flat' : 'heat-cold';
     const sectorSign = sectorRet >= 0 ? '+' : '';
-
+    const why = pick.conviction_reason || '';
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td><strong style="color:var(--blue);font-size:13px">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
-      <td><span class="heat-chip ${sectorCls}" style="font-size:10px">${pick.sector || ''}<span style="margin-left:4px">${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
+      <td><strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
+      <td><span class="sec-chip ${sectorCls}">${shortSector(pick.sector || '')}<span>${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
       <td style="color:var(--text2)">${pick.expiry}</td>
@@ -141,21 +177,30 @@ function renderBestPicks(data) {
       <td>
         <div class="conf-cell">
           <span class="conf-num" style="color:${confColor}">${confPct}%</span>
-          <div class="conf-bar-track"><div class="conf-bar-fill" style="width:${confPct}%;background:${confColor}"></div></div>
+          <div class="conf-bar-track conf-bar-sm"><div class="conf-bar-fill" style="width:${confPct}%;background:${confColor}"></div></div>
         </div>
       </td>
-      <td><span class="conviction-badge ${convictionClass(pick.conviction)}">${pick.conviction}</span></td>
-      <td style="max-width:200px;font-size:11px;color:var(--text2);white-space:normal;line-height:1.3">${pick.conviction_reason || ''}</td>
+      <td><span class="conviction-badge ${convictionClass(pick.conviction)}" title="${why}">${pick.conviction}</span></td>
+      <td class="why-cell" title="${why}">${why}</td>
       <td><button class="btn-secondary picks-drill-btn" data-t="${pick.ticker}">Details →</button></td>`;
     tbody.appendChild(tr);
   });
-
   tbody.querySelectorAll('.picks-drill-btn').forEach(btn =>
     btn.addEventListener('click', () => analyze(btn.dataset.t))
   );
-
   $('picksLoading').classList.add('hidden');
   $('picksTable').classList.remove('hidden');
+}
+
+function renderBestPicks(data) {
+  _allPicks = data.picks || [];
+  renderSectorHeat(data.sector_perf);
+  renderFilterBar();
+  const updated = data.updated_at ? new Date(data.updated_at * 1000) : new Date();
+  const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  $('picksStatus').textContent = `${data.picks.length} picks from ${data.scanned} tickers — last scan ${timeStr}${data.stale ? ' (refreshing…)' : ''}`;
+  const filtered = _activeSector ? _allPicks.filter(p => p.sector === _activeSector) : _allPicks;
+  renderPicksTable(filtered);
 }
 
 function startPicksCountdown(seconds) {
