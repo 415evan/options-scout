@@ -2,14 +2,30 @@
 
 const $ = id => document.getElementById(id);
 
-// ── Portfolio settings (localStorage) ─────────────────────────────────────────
-const SETTINGS_KEY = 'optionsScoutPortfolio';
-function loadSettings() {
-  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }
-  catch { return {}; }
+// ── Persistent store (survives app restarts via backend file) ─────────────────
+let STORE = {};  // loaded async at startup
+
+async function initStore() {
+  try {
+    const res = await fetch('/api/store');
+    STORE = await res.json();
+  } catch { STORE = {}; }
 }
-function saveSettings(s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
-let SETTINGS = loadSettings();
+
+async function persistStore() {
+  try {
+    await fetch('/api/store', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(STORE),
+    });
+  } catch (e) { console.error('Store save failed:', e); }
+}
+
+function loadSettings() { return STORE.settings || {}; }
+function saveSettings(s) { STORE.settings = s; persistStore(); }
+
+let SETTINGS = {};
 
 function updatePortfolioBtnText() {
   const t = $('portfolioBtnText');
@@ -33,7 +49,7 @@ function savePortfolio() {
   const pv = parseFloat($('setPortfolio').value) || 0;
   const bp = parseFloat($('setBuyingPower').value) || 0;
   const rp = parseFloat($('setRiskPct').value)   || 2;
-  SETTINGS = { portfolioValue: pv, buyingPower: bp, riskPct: rp };
+  SETTINGS = { portfolioValue: pv, buyingPower: bp, riskPct: rp, lastConfirmedDate: todayStr() };
   saveSettings(SETTINGS);
   closePortfolioModal();
   updatePortfolioBtnText();
@@ -461,14 +477,10 @@ window.skipMorningCheck = skipMorningCheck;
 window.saveMorningCheck = saveMorningCheck;
 
 // ── Trade log ─────────────────────────────────────────────────────────────────
-const TRADES_KEY = 'optionsScoutTrades';
 let _exitingTradeId = null;
 
-function loadTrades() {
-  try { return JSON.parse(localStorage.getItem(TRADES_KEY)) || []; }
-  catch { return []; }
-}
-function saveTrades(t) { localStorage.setItem(TRADES_KEY, JSON.stringify(t)); }
+function loadTrades() { return STORE.trades || []; }
+function saveTrades(t) { STORE.trades = t; persistStore(); }
 
 function openTradeLog() {
   renderTradeLog();
@@ -660,11 +672,17 @@ window.savePortfolio = savePortfolio;
 
 $('tradesBtn').addEventListener('click', openTradeLog);
 
-updatePortfolioBtnText();
-updateTradesBtnBadge();
 updateMarketBadge();
 setInterval(updateMarketBadge, 60000);
 
-// Kick off best picks on launch, then morning check after a short delay
-loadBestPicks();
-setTimeout(checkMorning, 1500);
+// Load persistent store first, then initialize everything that depends on saved data
+async function init() {
+  await initStore();
+  SETTINGS = loadSettings();
+  updatePortfolioBtnText();
+  updateTradesBtnBadge();
+  loadBestPicks();
+  // Delay morning check slightly so picks start loading first
+  setTimeout(checkMorning, 800);
+}
+init();

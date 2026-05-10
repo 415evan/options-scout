@@ -8,6 +8,8 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
+import json
+import platform
 import logging
 import os
 import re
@@ -490,6 +492,40 @@ def best_picks():
 
     out = _do_refresh()
     return jsonify(out)
+
+
+def _store_path():
+    system = platform.system()
+    if system == 'Darwin':
+        d = os.path.expanduser('~/Library/Application Support/Options Scout')
+    elif system == 'Windows':
+        d = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Options Scout')
+    else:
+        d = os.path.expanduser('~/.config/options-scout')
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, 'store.json')
+
+@app.route('/api/store', methods=['GET'])
+def get_store():
+    try:
+        p = _store_path()
+        if os.path.exists(p):
+            with open(p, 'r') as f:
+                return jsonify(json.load(f))
+    except Exception as e:
+        logger.warning('store read err: %s', e)
+    return jsonify({})
+
+@app.route('/api/store', methods=['POST'])
+def set_store():
+    try:
+        data = request.get_json(silent=True) or {}
+        with open(_store_path(), 'w') as f:
+            json.dump(data, f, indent=2)
+        return jsonify({'ok': True})
+    except Exception as e:
+        logger.warning('store write err: %s', e)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/health')
