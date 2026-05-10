@@ -141,7 +141,12 @@ function setupAutoUpdater() {
 ipcMain.handle('app:get-version', () => app.getVersion());
 ipcMain.handle('updater:install', () => {
   log.info('User triggered install');
-  autoUpdater.quitAndInstall();
+  if (pythonProc) {
+    try { pythonProc.kill('SIGTERM'); } catch {}
+    pythonProc = null;
+  }
+  // isSilent=true: no NSIS UI popup; isForceRunAfter=true: relaunch after install
+  autoUpdater.quitAndInstall(true, true);
 });
 
 // ── App lifecycle ────────────────────────────────────────────────────────────
