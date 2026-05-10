@@ -70,6 +70,100 @@ function showError(msg) { $('errorMsg').textContent = msg; showOnly('errorScreen
 function showDashboard() { showOnly('dashboard'); }
 function showBatch() { showOnly('batchScreen'); }
 
+// ── Best Picks ────────────────────────────────────────────────────────────────
+let _picksTimer = null;
+let _countdownTimer = null;
+let _nextRefreshAt = 0;
+
+const convictionClass = c => c === 'Strong' ? 'conv-strong' : c === 'High' ? 'conv-high' : c === 'Moderate' ? 'conv-moderate' : 'conv-speculative';
+
+function renderBestPicks(data) {
+  const tbody = $('picksBody');
+  tbody.innerHTML = '';
+
+  const updated = data.updated_at ? new Date(data.updated_at * 1000) : new Date();
+  const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  $('picksStatus').textContent = `${data.picks.length} picks from ${data.scanned} tickers — last scan ${timeStr}${data.stale ? ' (refreshing…)' : ''}`;
+
+  data.picks.forEach((pick, i) => {
+    const tr = document.createElement('tr');
+    tr.className = i < 3 ? `rank-${i+1}` : '';
+
+    const dteClass = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
+    const confPct  = Math.min(pick.confidence, 100);
+    const confColor = confPct >= 80 ? 'var(--green)' : confPct >= 65 ? 'var(--blue)' : confPct >= 50 ? 'var(--yellow)' : 'var(--text3)';
+    const sigHtml  = (pick.signals || []).map(s => `<span class="signal-tag">${s}</span>`).join('');
+    const otmStr   = pick.itm ? `<span class="itm-badge">ITM</span>` : '';
+
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td><strong style="color:var(--blue);font-size:14px">${pick.ticker}</strong>${otmStr}</td>
+      <td style="color:var(--text2);max-width:160px;overflow:hidden;text-overflow:ellipsis">${pick.company_name || ''}</td>
+      <td>${fmt$(pick.current_price)}</td>
+      <td><strong>${fmt$(pick.strike)}</strong></td>
+      <td style="color:var(--text2)">${pick.expiry}</td>
+      <td><span class="dte-chip ${dteClass}">${pick.dte}d</span></td>
+      <td style="font-weight:600">${fmt$(pick.mid)}</td>
+      <td>
+        <div class="conf-cell">
+          <span class="conf-num" style="color:${confColor}">${confPct}%</span>
+          <div class="conf-bar-track"><div class="conf-bar-fill" style="width:${confPct}%;background:${confColor}"></div></div>
+        </div>
+      </td>
+      <td><span class="conviction-badge ${convictionClass(pick.conviction)}">${pick.conviction}</span></td>
+      <td><div class="signals-cell">${sigHtml}</div></td>
+      <td><button class="btn-secondary picks-drill-btn" data-t="${pick.ticker}">Details →</button></td>`;
+    tbody.appendChild(tr);
+  });
+
+  tbody.querySelectorAll('.picks-drill-btn').forEach(btn =>
+    btn.addEventListener('click', () => analyze(btn.dataset.t))
+  );
+
+  $('picksLoading').classList.add('hidden');
+  $('picksTable').classList.remove('hidden');
+}
+
+function startPicksCountdown(seconds) {
+  if (_countdownTimer) clearInterval(_countdownTimer);
+  _nextRefreshAt = Date.now() + seconds * 1000;
+  const el = $('picksCountdown');
+  el.classList.remove('hidden');
+
+  function tick() {
+    const secs = Math.max(0, Math.round((_nextRefreshAt - Date.now()) / 1000));
+    el.textContent = `Refreshing in ${secs}s`;
+    if (secs === 0) el.textContent = 'Refreshing…';
+  }
+  tick();
+  _countdownTimer = setInterval(tick, 1000);
+}
+
+async function loadBestPicks(manual = false) {
+  if (manual) {
+    $('picksLoading').classList.remove('hidden');
+    $('picksTable').classList.add('hidden');
+    $('picksStatus').textContent = 'Scanning markets…';
+    if (_picksTimer) clearInterval(_picksTimer);
+    if (_countdownTimer) clearInterval(_countdownTimer);
+    $('picksCountdown').classList.add('hidden');
+  }
+
+  try {
+    const res  = await fetch('/api/best-picks');
+    const data = await res.json();
+    if (data.picks) {
+      renderBestPicks(data);
+      // schedule next auto-refresh in 60s
+      if (_picksTimer) clearInterval(_picksTimer);
+      _picksTimer = setTimeout(() => loadBestPicks(), 60000);
+      startPicksCountdown(60);
+    }
+  } catch (err) {
+    $('picksStatus').textContent = 'Error fetching picks — ' + err.message;
+  }
+}
+
 function updateMarketBadge() {
   const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const day = et.getDay(), hour = et.getHours() + et.getMinutes() / 60;
@@ -364,3 +458,6 @@ window.savePortfolio = savePortfolio;
 updatePortfolioBtnText();
 updateMarketBadge();
 setInterval(updateMarketBadge, 60000);
+
+// Kick off best picks on launch
+loadBestPicks();

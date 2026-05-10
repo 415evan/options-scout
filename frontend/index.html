@@ -78,12 +78,41 @@
   </div>
 </div>
 
-<section id="welcomeScreen" class="welcome-screen">
-  <div class="welcome-inner">
-    <h1>Find This Week's Best Call Options</h1>
-    <p>Ranked by key levels, support &amp; resistance, volume, and live news.</p>
+<section id="welcomeScreen" class="picks-screen">
+  <div class="picks-panel">
+    <div class="picks-header">
+      <div>
+        <h2>Live Best Picks</h2>
+        <p id="picksStatus" class="picks-status">Scanning 20 liquid tickers…</p>
+      </div>
+      <div class="picks-controls">
+        <span id="picksCountdown" class="picks-countdown hidden"></span>
+        <button class="btn-secondary picks-refresh-btn" onclick="loadBestPicks(true)">↻ Refresh</button>
+      </div>
+    </div>
+
+    <div id="picksLoading" class="picks-loading">
+      <div class="spinner"></div>
+      <p>Scanning markets — this takes ~20 seconds on first load…</p>
+    </div>
+
+    <div id="picksTable" class="hidden">
+      <div class="table-scroll">
+        <table class="opts-table picks-table">
+          <thead><tr>
+            <th>#</th><th>TICKER</th><th>COMPANY</th><th>PRICE</th>
+            <th>STRIKE</th><th>EXPIRY</th><th>DTE</th><th>MID</th>
+            <th>CONFIDENCE</th><th>CONVICTION</th><th>SIGNALS</th><th></th>
+          </tr></thead>
+          <tbody id="picksBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="picks-footer">
     <div class="quick-tickers">
-      <span class="qt-label">Quick:</span>
+      <span class="qt-label">Quick search:</span>
       <button class="qt-btn" data-t="SPY">SPY</button>
       <button class="qt-btn" data-t="QQQ">QQQ</button>
       <button class="qt-btn" data-t="AAPL">AAPL</button>
@@ -92,10 +121,9 @@
       <button class="qt-btn" data-t="MSFT">MSFT</button>
       <button class="qt-btn" data-t="AMD">AMD</button>
     </div>
-
-    <div class="watchlist-hint">
-      <h3>Or scan your TradingView watchlist</h3>
-      <p>In TradingView, click your watchlist menu (⋮) → <strong>Export Watchlist</strong>. Drop the <code>.txt</code> file below.</p>
+    <div class="watchlist-hint compact">
+      <h3>Scan your TradingView watchlist</h3>
+      <p>Export watchlist from TradingView (⋮ → Export Watchlist) then drop the <code>.txt</code> file below.</p>
       <div id="dropzone" class="dropzone">
         <span>Drop watchlist file here</span>
         <small>or click to browse</small>

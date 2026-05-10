@@ -5,6 +5,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
 import logging
 import os
 import re
@@ -242,6 +245,98 @@ def analyze_ticker(ticker):
     }
 
 
+# ─── Best Picks ───────────────────────────────────────────────────────────────
+
+SCAN_TICKERS = [
+    'SPY','QQQ','AAPL','NVDA','MSFT','TSLA','AMD','AMZN',
+    'META','GOOGL','COIN','PLTR','MSTR','NFLX','IWM',
+    'BAC','JPM','GLD','SOFI','HOOD',
+]
+PICKS_TTL = 60  # seconds
+
+_picks_cache = {'data': None, 'ts': 0, 'refreshing': False}
+_picks_lock  = threading.Lock()
+
+
+def compute_confidence(score, vol_signal, reasons):
+    base = min(score / 1.15, 80.0)
+    if vol_signal == 'High':     base += 12
+    elif vol_signal == 'Elevated': base += 6
+    base += min(len(reasons) * 2, 10)
+    return min(round(base), 95)
+
+
+def conviction_label(conf):
+    if conf >= 80: return 'Strong'
+    if conf >= 65: return 'High'
+    if conf >= 50: return 'Moderate'
+    return 'Speculative'
+
+
+def _scan_one(ticker):
+    try:
+        r = analyze_ticker(ticker)
+        if r.get('error') or not r.get('top_calls'):
+            return None
+        top     = r['top_calls'][0]
+        vol_sig = r['volume']['signal']
+        conf    = compute_confidence(top['score'], vol_sig, top['reasons'])
+        return {
+            'ticker':       ticker,
+            'company_name': r['company_name'],
+            'current_price': r['current_price'],
+            'strike':  top['strike'],
+            'expiry':  top['expiry'],
+            'dte':     top['dte'],
+            'bid':     top['bid'],
+            'ask':     top['ask'],
+            'mid':     top['mid'],
+            'volume':  top['volume'],
+            'open_interest': top['open_interest'],
+            'iv':      top['iv'],
+            'score':   top['score'],
+            'confidence': conf,
+            'conviction': conviction_label(conf),
+            'signals': top['reasons'][:4],
+            'volume_signal': vol_sig,
+            'itm': top.get('itm', False),
+        }
+    except Exception as e:
+        logger.warning('picks scan %s: %s', ticker, e)
+        return None
+
+
+def _do_refresh():
+    results = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = {ex.submit(_scan_one, t): t for t in SCAN_TICKERS}
+        for fut in as_completed(futs):
+            r = fut.result()
+            if r:
+                results.append(r)
+    results.sort(key=lambda x: x['confidence'], reverse=True)
+    out = {
+        'picks':      results[:10],
+        'scanned':    len(SCAN_TICKERS),
+        'updated_at': time.time(),
+    }
+    with _picks_lock:
+        _picks_cache['data']       = out
+        _picks_cache['ts']         = time.time()
+        _picks_cache['refreshing'] = False
+    return out
+
+
+def _warmup():
+    time.sleep(4)
+    try:
+        _do_refresh()
+    except Exception as e:
+        logger.warning('warmup err: %s', e)
+
+threading.Thread(target=_warmup, daemon=True).start()
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -374,6 +469,27 @@ def get_news(ticker):
     except Exception as e:
         logger.exception('news err')
         return jsonify({'news': [], 'error': str(e)})
+
+
+@app.route('/api/best-picks')
+def best_picks():
+    with _picks_lock:
+        fresh = _picks_cache['data'] and (time.time() - _picks_cache['ts']) < PICKS_TTL
+        if fresh:
+            return jsonify(_picks_cache['data'])
+        already = _picks_cache['refreshing']
+        if not already:
+            _picks_cache['refreshing'] = True
+
+    if already:
+        # another request is already refreshing — return stale cache if we have it
+        with _picks_lock:
+            if _picks_cache['data']:
+                d = dict(_picks_cache['data']); d['stale'] = True
+                return jsonify(d)
+
+    out = _do_refresh()
+    return jsonify(out)
 
 
 @app.route('/api/health')

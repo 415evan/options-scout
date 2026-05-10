@@ -73,11 +73,41 @@ html, body {
 }
 .update-badge:hover { opacity: .85; }
 
-/* Welcome */
-.welcome-screen { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 56px); padding: 40px 24px; }
-.welcome-inner { text-align: center; max-width: 600px; }
-.welcome-inner h1 { font-size: 28px; font-weight: 700; margin-bottom: 12px; letter-spacing: -.02em; }
-.welcome-inner p { color: var(--text2); font-size: 15px; margin-bottom: 24px; }
+/* Picks screen */
+.picks-screen { padding: 24px; display: flex; flex-direction: column; gap: 24px; min-height: calc(100vh - 56px); }
+.picks-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.picks-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--border2); background: var(--bg3);
+}
+.picks-header h2 { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+.picks-status { font-size: 12px; color: var(--text3); }
+.picks-controls { display: flex; align-items: center; gap: 12px; }
+.picks-countdown { font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; }
+.picks-refresh-btn { padding: 5px 12px !important; font-size: 12px !important; }
+.picks-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 60px 20px; color: var(--text2); font-size: 13px; }
+.picks-table tbody tr { cursor: default; }
+.picks-drill-btn { padding: 3px 10px !important; font-size: 11px !important; }
+
+/* Confidence bar */
+.conf-cell { display: flex; align-items: center; gap: 6px; }
+.conf-num { font-weight: 700; font-size: 13px; min-width: 36px; }
+.conf-bar-track { width: 60px; height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.conf-bar-fill { height: 100%; border-radius: 3px; transition: width .4s ease; }
+
+/* Conviction badge */
+.conviction-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; letter-spacing: .04em; }
+.conv-strong     { background: var(--green-dim); color: var(--green); }
+.conv-high       { background: var(--blue-dim);  color: var(--blue); }
+.conv-moderate   { background: var(--yellow-dim); color: var(--yellow); }
+.conv-speculative { background: var(--bg3); color: var(--text3); border: 1px solid var(--border); }
+
+/* Picks footer */
+.picks-footer { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+.picks-footer .quick-tickers { flex-shrink: 0; }
+.picks-footer .watchlist-hint.compact { flex: 1; min-width: 260px; }
+
+/* Welcome (kept for legacy layout vars) */
 
 .quick-tickers { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-bottom: 36px; }
 .qt-label { color: var(--text3); font-size: 13px; }
