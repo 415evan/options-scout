@@ -19,6 +19,43 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# ─── yfinance retry + per-ticker cache ───────────────────────────────────────
+
+def _yf_call(fn, retries=3, base_delay=2.0):
+    """Call a yfinance function, retrying on 429 / rate-limit errors."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            msg = str(e).lower()
+            if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit')):
+                if attempt < retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning('yf rate limited — retry in %.0fs (attempt %d/%d)', delay, attempt + 1, retries)
+                    time.sleep(delay)
+                    continue
+            raise
+    return None
+
+
+_ticker_cache      = {}
+_ticker_cache_lock = threading.Lock()
+TICKER_CACHE_TTL   = 300  # 5 min — reuse recent results within same scan cycle
+
+
+def _get_cached(ticker):
+    with _ticker_cache_lock:
+        e = _ticker_cache.get(ticker)
+        if e and (time.time() - e['ts']) < TICKER_CACHE_TTL:
+            return e['data']
+    return None
+
+
+def _set_cached(ticker, data):
+    with _ticker_cache_lock:
+        _ticker_cache[ticker] = {'data': data, 'ts': time.time()}
+
+
 class NumpyJSONProvider(DefaultJSONProvider):
     def default(self, obj):
         if isinstance(obj, np.integer):  return int(obj)
@@ -177,15 +214,23 @@ def score_call(opt, current_price, supports, resistances, dte):
 
 def analyze_ticker(ticker):
     ticker = ticker.upper().strip()
+
+    cached = _get_cached(ticker)
+    if cached:
+        return cached
+
     stock = yf.Ticker(ticker)
 
     info = {}
-    try: info = stock.info or {}
+    try: info = _yf_call(lambda: stock.info or {}) or {}
     except Exception: pass
 
     current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
-    hist = stock.history(period='3mo', auto_adjust=True)
-    if hist.empty:
+    try:
+        hist = _yf_call(lambda: stock.history(period='3mo', auto_adjust=True))
+    except Exception:
+        return {'ticker': ticker, 'error': 'Rate limited — try again in a moment'}
+    if hist is None or hist.empty:
         return {'ticker': ticker, 'error': 'No data'}
     if not current_price:
         current_price = float(hist['Close'].iloc[-1])
@@ -203,7 +248,7 @@ def analyze_ticker(ticker):
     resistances = sorted(resistances, key=lambda x: x['price'])[:6]
 
     try:
-        exp_dates = stock.options
+        exp_dates = _yf_call(lambda: list(stock.options)) or []
     except Exception:
         exp_dates = []
 
@@ -214,8 +259,8 @@ def analyze_ticker(ticker):
         dte = (exp - today).days
         if dte < 0 or dte > 45: continue
         try:
-            chain = stock.option_chain(ds).calls
-            if chain.empty: continue
+            chain = _yf_call(lambda d=ds: stock.option_chain(d).calls)
+            if chain is None or chain.empty: continue
             chain = chain[(chain['strike'] >= current_price * 0.80) & (chain['strike'] <= current_price * 1.22)]
             for _, row in chain.iterrows():
                 res = score_call(row.to_dict(), current_price, supports, resistances, dte)
@@ -244,7 +289,7 @@ def analyze_ticker(ticker):
     vhist   = [{'date': dt.strftime('%m/%d'), 'volume': int(r['Volume']), 'above_avg': r['Volume'] > avg_vol}
                for dt, r in hist.tail(20).iterrows()]
 
-    return {
+    result = {
         'ticker': ticker,
         'company_name':   info.get('longName', ticker),
         'current_price':  round(current_price, 2),
@@ -260,6 +305,8 @@ def analyze_ticker(ticker):
             'pe_ratio':  info.get('trailingPE'),
         }
     }
+    _set_cached(ticker, result)
+    return result
 
 
 # ─── Best Picks — full sector-aware scanner ───────────────────────────────────
@@ -364,8 +411,8 @@ def get_sector_performance():
     perf = {}
     for sector, etf in SECTOR_ETFS.items():
         try:
-            hist = yf.Ticker(etf).history(period='5d')
-            if len(hist) >= 2:
+            hist = _yf_call(lambda e=etf: yf.Ticker(e).history(period='5d'))
+            if hist is not None and len(hist) >= 2:
                 ret = (float(hist['Close'].iloc[-1]) / float(hist['Close'].iloc[0]) - 1) * 100
                 perf[sector] = round(ret, 2)
             else:
@@ -483,7 +530,7 @@ def _do_refresh():
     logger.info('Scanning %d tickers across %d sectors', len(scan_list), len(SECTOR_ETFS))
 
     results = []
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=5) as ex:
         futs = {ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0)): t
                 for t, sec in scan_list}
         for fut in as_completed(futs):
