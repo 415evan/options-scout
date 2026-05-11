@@ -316,7 +316,7 @@ def analyze_ticker(ticker):
         'current_price':  round(current_price, 2),
         'support_levels': supports,
         'resistance_levels': resistances,
-        'top_calls': best_calls[:12],
+        'top_calls': best_calls[:20],
         'volume': {'today': today_v, 'avg': int(avg_vol), 'ratio': ratio, 'signal': sig, 'history': vhist},
         'stats': {
             '52w_high':  info.get('fiftyTwoWeekHigh'),
@@ -470,8 +470,8 @@ def build_scan_list(sector_perf):
 
 def compute_confidence(score, vol_signal, reasons, sector_ret=0.0):
     base = min(score / 1.15, 78.0)
-    if vol_signal == 'High':      base += 12
-    elif vol_signal == 'Elevated': base += 6
+    if vol_signal == 'High':    base += 12
+    elif vol_signal == 'Normal': base += 3
     base += min(len(reasons) * 2, 10)
     # Hot sector bonus
     if sector_ret >= 3:   base += 8
@@ -539,8 +539,8 @@ def _scan_one_with_sector(ticker, sector, sector_ret):
             'signals':         top['reasons'][:4],
             'volume_signal':   vol_sig,
             'itm':             top.get('itm', False),
-            'support_levels':    r.get('support_levels', [])[:3],
-            'resistance_levels': r.get('resistance_levels', [])[:3],
+            'support_levels':    [l['price'] for l in r.get('support_levels', [])[:3]],
+            'resistance_levels': [l['price'] for l in r.get('resistance_levels', [])[:3]],
         }
     except Exception as e:
         logger.warning('picks scan %s: %s', ticker, e)
