@@ -113,6 +113,28 @@ html, body {
 }
 .sec-chip span { font-weight: 500; }
 
+/* Premium range filter bar */
+.premium-filter-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-bottom: 1px solid var(--border2);
+  background: var(--bg2); font-size: 12px; flex-wrap: wrap;
+}
+.pf-label { color: var(--text2); font-weight: 600; }
+.pf-prefix { color: var(--text3); font-size: 12px; }
+.pf-sep { color: var(--text3); }
+.pf-input {
+  width: 72px; background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 5px; color: var(--text); font-size: 12px;
+  padding: 3px 6px; outline: none;
+}
+.pf-input:focus { border-color: var(--blue); }
+.pf-hint { color: var(--blue); font-size: 11px; margin-left: 4px; }
+.pf-clear {
+  background: none; border: 1px solid var(--border); color: var(--text3);
+  border-radius: 4px; padding: 1px 8px; cursor: pointer; font-size: 11px; margin-left: 4px;
+}
+.pf-clear:hover { border-color: var(--red); color: var(--red); }
+
 /* Picks table — compact to fit screen */
 .picks-table td, .picks-table th { padding: 5px 5px; }
 .picks-table .conf-bar-sm { width: 36px !important; }

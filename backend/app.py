@@ -428,14 +428,14 @@ def get_sector_performance():
 
 
 def build_scan_list(sector_perf):
-    """Return ~70 tickers weighted toward hot sectors, deduplicated."""
+    """Return ~90 tickers weighted toward hot sectors, min 6 per sector."""
     ranked = list(sector_perf.keys())
-    # Slots: top sector 14, 2nd 12, 3rd 10, 4th 8, rest 4, broad market always
-    slots  = [14, 12, 10, 8, 4, 4, 4, 3, 3, 3, 3, 3]
+    # Slots: top sector 14, 2nd 12, 3rd 10, 4th 8, rest min 6
+    slots  = [14, 12, 10, 8, 6, 6, 6, 6, 6, 6, 6, 6]
     seen, result = set(), []
 
     for i, sector in enumerate(ranked):
-        n = slots[i] if i < len(slots) else 3
+        n = slots[i] if i < len(slots) else 6
         for t in SECTOR_TICKERS.get(sector, [])[:n]:
             if t not in seen:
                 seen.add(t); result.append((t, sector))
@@ -540,7 +540,7 @@ def _do_refresh():
 
     results.sort(key=lambda x: x['confidence'], reverse=True)
     out = {
-        'picks':        results[:15],
+        'picks':        results[:30],
         'scanned':      len(scan_list),
         'sector_perf':  sector_perf,
         'updated_at':   time.time(),

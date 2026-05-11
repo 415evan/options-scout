@@ -220,6 +220,18 @@
     <div id="sectorHeatBar" class="sector-heat-bar hidden"></div>
     <div id="sectorFilterBar" class="sector-filter-bar hidden"></div>
 
+    <div class="premium-filter-bar">
+      <span class="pf-label">Premium range:</span>
+      <span class="pf-prefix">$</span>
+      <input id="minPremium" class="pf-input" type="number" min="0" step="0.05" placeholder="0.10" title="Min ask per share" />
+      <span class="pf-sep">—</span>
+      <span class="pf-prefix">$</span>
+      <input id="maxPremium" class="pf-input" type="number" min="0" step="0.05" placeholder="50.00" title="Max ask per share" />
+      <span class="pf-label">per share</span>
+      <span id="budgetHint" class="pf-hint"></span>
+      <button id="clearPremiumBtn" class="pf-clear hidden" onclick="clearPremiumFilter()">× Clear</button>
+    </div>
+
     <div id="picksLoading" class="picks-loading">
       <div class="spinner"></div>
       <p>Scanning markets across all sectors — takes ~20 seconds on first load…</p>

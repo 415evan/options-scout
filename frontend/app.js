@@ -93,6 +93,36 @@ let _nextRefreshAt = 0;
 let _allPicks = [];
 let _activeSector = null;
 let _lastSectorPerf = null;
+let _minPremium = 0;
+let _maxPremium = 0;
+
+function applyFilters(picks) {
+  let out = picks;
+  if (_activeSector) out = out.filter(p => p.sector === _activeSector);
+  if (_minPremium > 0) out = out.filter(p => (p.ask || 0) >= _minPremium);
+  if (_maxPremium > 0) out = out.filter(p => (p.ask || 0) <= _maxPremium);
+  return out;
+}
+
+function updateBudgetHint() {
+  const hint = $('budgetHint');
+  const clearBtn = $('clearPremiumBtn');
+  const active = _minPremium > 0 || _maxPremium > 0;
+  clearBtn.classList.toggle('hidden', !active);
+  if (!active) { hint.textContent = ''; return; }
+  const minC = _minPremium > 0 ? '$' + (_minPremium * 100).toFixed(0) : '$0';
+  const maxC = _maxPremium > 0 ? '$' + (_maxPremium * 100).toFixed(0) : '∞';
+  hint.textContent = `= ${minC}–${maxC} per contract`;
+}
+
+function clearPremiumFilter() {
+  _minPremium = 0; _maxPremium = 0;
+  $('minPremium').value = '';
+  $('maxPremium').value = '';
+  updateBudgetHint();
+  renderPicksTable(applyFilters(_allPicks));
+}
+window.clearPremiumFilter = clearPremiumFilter;
 
 const convictionClass = c => c === 'Strong' ? 'conv-strong' : c === 'High' ? 'conv-high' : c === 'Moderate' ? 'conv-moderate' : 'conv-speculative';
 
@@ -123,7 +153,7 @@ function renderSectorHeat(sectorPerf) {
     chip.addEventListener('click', () => {
       const sec = chip.dataset.sector;
       _activeSector = _activeSector === sec ? null : sec;
-      renderPicksTable(_activeSector ? _allPicks.filter(p => p.sector === _activeSector) : _allPicks);
+      renderPicksTable(applyFilters(_allPicks));
       renderSectorHeat(null);
       renderFilterBar();
     });
@@ -143,7 +173,7 @@ function renderFilterBar() {
 
 function clearSectorFilter() {
   _activeSector = null;
-  renderPicksTable(_allPicks);
+  renderPicksTable(applyFilters(_allPicks));
   renderSectorHeat(null);
   renderFilterBar();
 }
@@ -152,6 +182,16 @@ window.clearSectorFilter = clearSectorFilter;
 function renderPicksTable(picks) {
   const tbody = $('picksBody');
   tbody.innerHTML = '';
+  if (!picks.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="12" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
+      No picks found in ${_activeSector || 'this sector'} this scan — try ↻ Refresh or select another sector.
+    </td>`;
+    tbody.appendChild(tr);
+    $('picksLoading').classList.add('hidden');
+    $('picksTable').classList.remove('hidden');
+    return;
+  }
   picks.forEach((pick, i) => {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
@@ -199,8 +239,7 @@ function renderBestPicks(data) {
   const updated = data.updated_at ? new Date(data.updated_at * 1000) : new Date();
   const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   $('picksStatus').textContent = `${data.picks.length} picks from ${data.scanned} tickers — last scan ${timeStr}${data.stale ? ' (refreshing…)' : ''}`;
-  const filtered = _activeSector ? _allPicks.filter(p => p.sector === _activeSector) : _allPicks;
-  renderPicksTable(filtered);
+  renderPicksTable(applyFilters(_allPicks));
 }
 
 function startPicksCountdown(seconds) {
@@ -736,6 +775,16 @@ window.closePortfolioModal = closePortfolioModal;
 window.savePortfolio = savePortfolio;
 
 $('tradesBtn').addEventListener('click', openTradeLog);
+
+// Premium range filter
+function onPremiumChange() {
+  _minPremium = parseFloat($('minPremium').value) || 0;
+  _maxPremium = parseFloat($('maxPremium').value) || 0;
+  updateBudgetHint();
+  if (_allPicks.length) renderPicksTable(applyFilters(_allPicks));
+}
+$('minPremium').addEventListener('input', onPremiumChange);
+$('maxPremium').addEventListener('input', onPremiumChange);
 
 updateMarketBadge();
 setInterval(updateMarketBadge, 60000);
