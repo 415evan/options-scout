@@ -304,7 +304,7 @@ function renderPicksTable(picks) {
   tbody.innerHTML = '';
   if (!picks.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="13" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
+    tr.innerHTML = `<td colspan="14" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
       No picks found in ${_activeSector || 'this sector'} this scan — try ↻ Refresh or select another sector.
     </td>`;
     tbody.appendChild(tr);
@@ -336,10 +336,8 @@ function renderPicksTable(picks) {
 
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td>
-        <strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}
-        ${keyLevelHtml}
-      </td>
+      <td><strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
+      <td class="entry-cell">${entryLevel ? `<span class="entry-level-badge" title="Enter the call if price closes above ${fmt$(entryLevel)}">⚡ &gt; ${fmt$(entryLevel)}</span>` : '<span style="color:var(--text3);font-size:11px">—</span>'}</td>
       <td><span class="sec-chip ${sectorCls}">${shortSector(pick.sector || '')}<span>${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
