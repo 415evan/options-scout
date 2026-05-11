@@ -545,7 +545,7 @@ def _do_refresh():
 
     results.sort(key=lambda x: x['confidence'], reverse=True)
     out = {
-        'picks':        results[:30],
+        'picks':        results,
         'scanned':      len(scan_list),
         'sector_perf':  sector_perf,
         'updated_at':   time.time(),
