@@ -216,11 +216,43 @@ window.toggleTickerWatch = toggleTickerWatch;
 
 let _maxPremium = 0;
 
+// ── Expiry / DTE filter ───────────────────────────────────────────────────────
+// null = all, or { min, max } DTE range
+let _dteFilter = null;
+
+const DTE_PRESETS = [
+  { label: 'All',       min: 0,  max: 999 },
+  { label: 'Weekly',    min: 0,  max: 7   },
+  { label: '2-Week',    min: 8,  max: 14  },
+  { label: 'Monthly',   min: 15, max: 30  },
+  { label: 'Swing',     min: 31, max: 60  },
+];
+
+function renderDteFilter() {
+  const bar = $('dteFilterBar');
+  if (!bar) return;
+  bar.innerHTML = DTE_PRESETS.map(p => {
+    const active = !_dteFilter && p.label === 'All'
+      ? ' dte-btn-active'
+      : (_dteFilter && _dteFilter.label === p.label ? ' dte-btn-active' : '');
+    return `<button class="dte-preset-btn${active}" data-label="${p.label}" data-min="${p.min}" data-max="${p.max}">${p.label}</button>`;
+  }).join('');
+  bar.querySelectorAll('.dte-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const label = btn.dataset.label;
+      _dteFilter = label === 'All' ? null : { label, min: +btn.dataset.min, max: +btn.dataset.max };
+      renderDteFilter();
+      renderPicksTable(applyFilters(_allPicks));
+    });
+  });
+}
+
 function applyFilters(picks) {
   let out = picks;
   if (_activeSector) out = out.filter(p => p.sector === _activeSector);
   if (_minPremium > 0) out = out.filter(p => (p.ask || 0) >= _minPremium);
   if (_maxPremium > 0) out = out.filter(p => (p.ask || 0) <= _maxPremium);
+  if (_dteFilter) out = out.filter(p => p.dte >= _dteFilter.min && p.dte <= _dteFilter.max);
   return out;
 }
 
@@ -375,6 +407,7 @@ function renderBestPicks(data) {
   _allPicks = data.picks || [];
   renderSectorHeat(data.sector_perf);
   renderFilterBar();
+  renderDteFilter();
   const updated = data.updated_at ? new Date(data.updated_at * 1000) : new Date();
   const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   $('picksStatus').textContent = `${data.picks.length} picks from ${data.scanned} tickers — last scan ${timeStr}${data.stale ? ' (refreshing…)' : ''}`;

@@ -161,6 +161,22 @@ html, body {
 }
 .entry-sub { font-size: 11px; color: var(--text2); margin-top: 1px; }
 
+/* DTE / expiry filter bar */
+.dte-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-bottom: 1px solid var(--border2);
+  background: var(--bg2);
+}
+.dte-btn-group { display: flex; gap: 5px; }
+.dte-preset-btn {
+  padding: 3px 10px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg3); color: var(--text2); cursor: pointer;
+  transition: all .15s;
+}
+.dte-preset-btn:hover { border-color: var(--blue); color: var(--blue); }
+.dte-preset-btn.dte-btn-active { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+
 /* Entry level column badge */
 .entry-cell { white-space: nowrap; }
 .entry-level-badge {
