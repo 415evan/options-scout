@@ -144,6 +144,13 @@ html, body {
   font-size: 11px; color: var(--text2);
 }
 
+/* Key level entry tag */
+.key-level-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .03em;
+  color: var(--yellow); margin-top: 2px;
+  white-space: nowrap;
+}
+
 /* Watch button */
 .watch-btn {
   background: none; border: 1px solid var(--border); border-radius: 6px;

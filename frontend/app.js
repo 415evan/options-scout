@@ -286,9 +286,21 @@ function renderPicksTable(picks) {
     const sectorCls = sectorRet >= 2 ? 'heat-hot' : sectorRet >= 0.5 ? 'heat-warm' : sectorRet >= -0.5 ? 'heat-flat' : 'heat-cold';
     const sectorSign = sectorRet >= 0 ? '+' : '';
     const why = pick.conviction_reason || '';
+
+    // Key level: nearest resistance above price = entry trigger
+    const resistances = (pick.resistance_levels || []).filter(l => l > pick.current_price).sort((a,b) => a-b);
+    const supports    = (pick.support_levels    || []).filter(l => l < pick.current_price).sort((a,b) => b-a);
+    const entryLevel  = resistances[0] || null;   // lowest resistance above price
+    const keyLevelHtml = entryLevel
+      ? `<div class="key-level-tag" title="Enter the call if price closes above $${entryLevel.toFixed(2)}">⚡ Enter &gt; ${fmt$(entryLevel)}</div>`
+      : '';
+
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td><strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
+      <td>
+        <strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}
+        ${keyLevelHtml}
+      </td>
       <td><span class="sec-chip ${sectorCls}">${shortSector(pick.sector || '')}<span>${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
