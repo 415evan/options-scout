@@ -534,20 +534,24 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
       targetCell = `<span class="target-cell">${fmt$(pos.target2x)}</span>`;
     }
 
-    // Entry signal: nearest resistance above current price
+    // Per-strike entry signal:
+    // Find the highest resistance between current price and this strike —
+    // that's the "last gate" the stock must break through to reach your strike.
+    // If no resistance sits between price and strike, use the nearest one above price.
     const toNum = l => (typeof l === 'object' && l !== null) ? l.price : l;
     const resPrices = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice).sort((a,b) => a-b);
-    // Also flag if this strike itself is already above the nearest resistance (aggressive entry)
-    const entryLvl = resPrices[0] || null;
+    const belowStrike = resPrices.filter(p => p < opt.strike);
+    // "last gate" = highest resistance below this strike (or nearest above price as fallback)
+    const entryLvl = belowStrike.length ? belowStrike[belowStrike.length - 1] : (resPrices[0] || null);
     let entryCellHtml;
     if (!entryLvl) {
       entryCellHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
-    } else if (opt.strike <= entryLvl) {
-      // Strike is below resistance — wait for price to break the level first
-      entryCellHtml = `<span class="entry-level-badge" title="Enter this call once price breaks above ${fmt$(entryLvl)}">⚡ &gt; ${fmt$(entryLvl)}</span>`;
+    } else if (opt.strike > entryLvl) {
+      // Normal: stock must break this level before the strike is realistic
+      entryCellHtml = `<span class="entry-level-badge" title="Enter once price closes above ${fmt$(entryLvl)} — last resistance before your $${opt.strike} strike">⚡ &gt; ${fmt$(entryLvl)}</span>`;
     } else {
-      // Strike is above resistance — price needs to run past a big level to profit; mark as aggressive
-      entryCellHtml = `<span class="entry-level-badge entry-level-aggressive" title="Strike ${fmt$(opt.strike)} is above resistance ${fmt$(entryLvl)} — aggressive play, enter only on strong break">🔥 &gt; ${fmt$(entryLvl)}</span>`;
+      // Strike is at or below the entry level — conservative, enter on first break
+      entryCellHtml = `<span class="entry-level-badge" title="Enter once price closes above ${fmt$(entryLvl)}">⚡ &gt; ${fmt$(entryLvl)}</span>`;
     }
 
     tr.innerHTML = `
