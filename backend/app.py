@@ -133,13 +133,20 @@ def add_key_levels(df, current_price):
 # ─── Option Scoring ───────────────────────────────────────────────────────────
 
 def score_call(opt, current_price, supports, resistances, dte):
-    strike = float(opt.get('strike', 0))
-    bid    = float(opt.get('bid', 0) or 0)
-    ask    = float(opt.get('ask', 0) or 0)
+    strike     = float(opt.get('strike', 0))
+    bid        = float(opt.get('bid', 0) or 0)
+    ask        = float(opt.get('ask', 0) or 0)
+    last_price = float(opt.get('lastPrice', 0) or 0)
     vol    = int(opt.get('volume', 0) or 0)
     oi     = int(opt.get('openInterest', 0) or 0)
     iv     = float(opt.get('impliedVolatility', 0) or 0)
-    if bid <= 0 or ask <= 0 or strike <= 0 or ask > 50:
+
+    # When market is closed bid/ask are 0 — fall back to lastPrice
+    if bid <= 0 and ask <= 0 and last_price > 0:
+        bid = last_price * 0.95
+        ask = last_price * 1.05
+
+    if strike <= 0 or ask <= 0:
         return None
 
     score, reasons = 0, []
