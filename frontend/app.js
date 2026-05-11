@@ -54,7 +54,7 @@ function savePortfolio() {
   closePortfolioModal();
   updatePortfolioBtnText();
   // Re-render last results if dashboard is showing
-  if (window._lastAnalysis) renderOptions(window._lastAnalysis.top_calls, window._lastAnalysis.current_price);
+  if (window._lastAnalysis) renderOptions(window._lastAnalysis.top_calls, window._lastAnalysis.current_price, window._lastAnalysis.resistance_levels);
 }
 
 function isPortfolioSet() {
@@ -488,7 +488,7 @@ function renderLevel(lvl, kind) {
 
 const scoreTier = s => s >= 70 ? 'score-high' : (s >= 45 ? 'score-mid' : 'score-low');
 
-function renderOptions(calls, currentPrice) {
+function renderOptions(calls, currentPrice, resistanceLevels) {
   const tbody = $('optsBody');
   tbody.innerHTML = '';
   // Show/hide the "set portfolio" banner
@@ -534,9 +534,26 @@ function renderOptions(calls, currentPrice) {
       targetCell = `<span class="target-cell">${fmt$(pos.target2x)}</span>`;
     }
 
+    // Entry signal: nearest resistance above current price
+    const toNum = l => (typeof l === 'object' && l !== null) ? l.price : l;
+    const resPrices = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice).sort((a,b) => a-b);
+    // Also flag if this strike itself is already above the nearest resistance (aggressive entry)
+    const entryLvl = resPrices[0] || null;
+    let entryCellHtml;
+    if (!entryLvl) {
+      entryCellHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
+    } else if (opt.strike <= entryLvl) {
+      // Strike is below resistance — wait for price to break the level first
+      entryCellHtml = `<span class="entry-level-badge" title="Enter this call once price breaks above ${fmt$(entryLvl)}">⚡ &gt; ${fmt$(entryLvl)}</span>`;
+    } else {
+      // Strike is above resistance — price needs to run past a big level to profit; mark as aggressive
+      entryCellHtml = `<span class="entry-level-badge entry-level-aggressive" title="Strike ${fmt$(opt.strike)} is above resistance ${fmt$(entryLvl)} — aggressive play, enter only on strong break">🔥 &gt; ${fmt$(entryLvl)}</span>`;
+    }
+
     tr.innerHTML = `
       <td>${i+1}</td>
       <td><span class="strike-val">${fmt$(opt.strike)}</span> ${otmStr}</td>
+      <td class="entry-cell">${entryCellHtml}</td>
       <td style="color:var(--text2)">${opt.expiry}</td>
       <td><span class="dte-chip ${dteClass}">${opt.dte}d</span></td>
       <td class="green">${fmt$(opt.bid)}</td>
@@ -630,7 +647,7 @@ async function analyze(ticker) {
 
     if (data.volume) renderVolume(data.volume);
     window._lastAnalysis = data;
-    renderOptions(data.top_calls, data.current_price);
+    renderOptions(data.top_calls, data.current_price, data.resistance_levels);
     renderEntrySignal(data.ticker, data.resistance_levels, data.support_levels, data.current_price);
     showDashboard();
 
@@ -755,7 +772,7 @@ function saveMorningCheck() {
   saveSettings(SETTINGS);
   $('morningModal').classList.add('hidden');
   updatePortfolioBtnText();
-  if (window._lastAnalysis) renderOptions(window._lastAnalysis.top_calls, window._lastAnalysis.current_price);
+  if (window._lastAnalysis) renderOptions(window._lastAnalysis.top_calls, window._lastAnalysis.current_price, window._lastAnalysis.resistance_levels);
 }
 
 window.skipMorningCheck = skipMorningCheck;

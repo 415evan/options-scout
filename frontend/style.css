@@ -187,6 +187,10 @@ html, body {
   border-radius: 5px; padding: 2px 7px;
   white-space: nowrap; cursor: default;
 }
+.entry-level-aggressive {
+  color: var(--red); background: var(--red-dim);
+  border-color: rgba(248,81,73,.35);
+}
 
 /* Watch button */
 .watch-btn {
