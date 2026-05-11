@@ -270,7 +270,6 @@ def analyze_ticker(ticker):
                 res = score_call(row.to_dict(), current_price, supports, resistances, dte)
                 if not res: continue
                 sc, reasons = res
-                if sc < 8: continue
                 bid = float(row.get('bid', 0) or 0); ask = float(row.get('ask', 0) or 0)
                 best_calls.append({
                     'strike': float(row['strike']), 'expiry': ds, 'dte': dte,
@@ -522,6 +521,8 @@ def _scan_one_with_sector(ticker, sector, sector_ret):
             'signals':         top['reasons'][:4],
             'volume_signal':   vol_sig,
             'itm':             top.get('itm', False),
+            'support_levels':    r.get('support_levels', [])[:3],
+            'resistance_levels': r.get('resistance_levels', [])[:3],
         }
     except Exception as e:
         logger.warning('picks scan %s: %s', ticker, e)
@@ -753,6 +754,23 @@ def set_store():
     except Exception as e:
         logger.warning('store write err: %s', e)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/price/<ticker>')
+def get_price(ticker):
+    ticker = ticker.upper().strip()
+    try:
+        hist = _yf_call(lambda: yf.Ticker(ticker).history(period='1d', interval='1m'))
+        if hist is not None and not hist.empty:
+            price = round(float(hist['Close'].iloc[-1]), 2)
+            return jsonify({'ticker': ticker, 'price': price})
+    except Exception:
+        pass
+    # fallback to cached analyze result
+    cached = _get_cached(ticker)
+    if cached:
+        return jsonify({'ticker': ticker, 'price': cached['current_price']})
+    return jsonify({'error': 'price unavailable'}), 404
 
 
 @app.route('/api/health')
