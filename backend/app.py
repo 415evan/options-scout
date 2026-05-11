@@ -146,24 +146,28 @@ def score_call(opt, current_price, supports, resistances, dte):
 
     # ── Moneyness ────────────────────────────────────────────────────────────
     otm_pct = (strike - current_price) / current_price * 100
-    if   -1 <= otm_pct <= 2:    score += 30; reasons.append('ATM strike')
-    elif  2 < otm_pct <=  5:    score += 24; reasons.append(f'{otm_pct:.1f}% OTM')
-    elif  5 < otm_pct <= 10:    score += 16; reasons.append(f'{otm_pct:.1f}% OTM')
-    elif 10 < otm_pct <= 20:    score += 10; reasons.append(f'{otm_pct:.1f}% OTM (lottery)')
-    elif -5 <= otm_pct < -1:    score += 18; reasons.append(f'ITM {abs(otm_pct):.1f}%')
-    else:                        score += 5
+    if  10 < otm_pct <= 20:    score += 32; reasons.append(f'{otm_pct:.1f}% OTM — breakout play')
+    elif 20 < otm_pct <= 40:   score += 28; reasons.append(f'{otm_pct:.1f}% OTM — lottery')
+    elif  5 < otm_pct <= 10:   score += 22; reasons.append(f'{otm_pct:.1f}% OTM')
+    elif  2 < otm_pct <=  5:   score += 16; reasons.append(f'{otm_pct:.1f}% OTM')
+    elif -1 <= otm_pct <= 2:   score += 12; reasons.append('ATM strike')
+    elif -5 <= otm_pct < -1:   score +=  8; reasons.append(f'ITM {abs(otm_pct):.1f}%')
+    elif otm_pct > 40:         score += 20; reasons.append(f'{otm_pct:.1f}% OTM — deep lottery')
+    else:                       score +=  3
 
     # ── DTE ──────────────────────────────────────────────────────────────────
-    if   2 <= dte <= 5:   score += 20; reasons.append(f'{dte}d expiry (optimal weekly)')
-    elif dte == 1:        score += 10; reasons.append('1d expiry (high gamma)')
+    if   2 <= dte <= 5:   score += 18; reasons.append(f'{dte}d expiry (weekly)')
+    elif dte == 1:        score += 8;  reasons.append('1d expiry (high gamma)')
     elif  5 < dte <= 10:  score += 16; reasons.append(f'{dte}d expiry')
-    elif 10 < dte <= 21:  score += 12; reasons.append(f'{dte}d expiry')
-    elif 21 < dte <= 45:  score += 8;  reasons.append(f'{dte}d expiry (swing)')
+    elif 10 < dte <= 21:  score += 14; reasons.append(f'{dte}d expiry')
+    elif 21 < dte <= 45:  score += 18; reasons.append(f'{dte}d expiry (swing)')
+    elif 45 < dte <= 60:  score += 14; reasons.append(f'{dte}d expiry (swing)')
 
     # ── Cheap premium bonus (more contracts, lottery upside) ─────────────────
-    if   ask <= 0.50: score += 18; reasons.append(f'Cheap premium ${ask:.2f}')
-    elif ask <= 1.50: score += 12; reasons.append(f'Low premium ${ask:.2f}')
-    elif ask <= 3.00: score +=  6; reasons.append(f'Affordable ${ask:.2f}')
+    if   ask <= 0.20: score += 30; reasons.append(f'Ultra cheap ${ask:.2f} — stack contracts')
+    elif ask <= 0.50: score += 24; reasons.append(f'Cheap premium ${ask:.2f}')
+    elif ask <= 1.50: score += 16; reasons.append(f'Low premium ${ask:.2f}')
+    elif ask <= 3.00: score +=  8; reasons.append(f'Affordable ${ask:.2f}')
 
     # ── Volume ────────────────────────────────────────────────────────────────
     if   vol >= 2000: score += 25; reasons.append(f'Vol {vol:,} (very active)')
@@ -257,16 +261,16 @@ def analyze_ticker(ticker):
     for ds in exp_dates[:10]:
         exp = datetime.strptime(ds, '%Y-%m-%d')
         dte = (exp - today).days
-        if dte < 0 or dte > 45: continue
+        if dte < 0 or dte > 60: continue
         try:
             chain = _yf_call(lambda d=ds: stock.option_chain(d).calls)
             if chain is None or chain.empty: continue
-            chain = chain[(chain['strike'] >= current_price * 0.80) & (chain['strike'] <= current_price * 1.22)]
+            chain = chain[(chain['strike'] >= current_price * 0.90) & (chain['strike'] <= current_price * 1.60)]
             for _, row in chain.iterrows():
                 res = score_call(row.to_dict(), current_price, supports, resistances, dte)
                 if not res: continue
                 sc, reasons = res
-                if sc < 12: continue
+                if sc < 8: continue
                 bid = float(row.get('bid', 0) or 0); ask = float(row.get('ask', 0) or 0)
                 best_calls.append({
                     'strike': float(row['strike']), 'expiry': ds, 'dte': dte,
