@@ -204,6 +204,9 @@
   </div>
 </div>
 
+<!-- Level alert toasts -->
+<div id="alertContainer" style="position:fixed;top:56px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:340px;pointer-events:none"></div>
+
 <section id="welcomeScreen" class="picks-screen">
   <div class="picks-panel">
     <div class="picks-header">
@@ -243,7 +246,7 @@
           <thead><tr>
             <th>#</th><th>TICKER</th><th>SECTOR</th><th>PRICE</th>
             <th>STRIKE</th><th>EXPIRY</th><th>DTE</th><th>MID</th>
-            <th>CONFIDENCE</th><th>CONVICTION</th><th>WHY</th><th></th>
+            <th>CONFIDENCE</th><th>CONVICTION</th><th>WHY</th><th>ALERT</th><th></th>
           </tr></thead>
           <tbody id="picksBody"></tbody>
         </table>
@@ -370,6 +373,18 @@
           <span id="optCount" class="count-badge">0 found</span>
         </div>
         <div class="card-body no-pad">
+          <!-- Entry signal banner -->
+          <div id="entrySignal" class="entry-signal hidden">
+            <div class="entry-signal-inner">
+              <span class="entry-lightning">⚡</span>
+              <div class="entry-body">
+                <div id="entrySignalTitle" class="entry-title">Enter above $—</div>
+                <div id="entrySignalSub" class="entry-sub">Wait for price to break &amp; hold above this level before entering the call</div>
+              </div>
+              <button id="entryWatchBtn" class="watch-btn" onclick="toggleTickerWatch()">🔕 Watch</button>
+            </div>
+          </div>
+
           <div id="positionBanner" class="position-banner hidden">
             <span>💡 Set your portfolio to see how many contracts to buy and your P&amp;L</span>
             <button class="btn-secondary" onclick="openPortfolioModal()">Set Portfolio →</button>

@@ -144,6 +144,23 @@ html, body {
   font-size: 11px; color: var(--text2);
 }
 
+/* Entry signal banner (individual ticker page) */
+.entry-signal {
+  margin: 0; border-bottom: 1px solid var(--border);
+  background: linear-gradient(90deg, rgba(234,179,8,.08) 0%, transparent 100%);
+  border-left: 3px solid var(--yellow);
+}
+.entry-signal-inner {
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+}
+.entry-lightning { font-size: 20px; flex-shrink: 0; }
+.entry-body { flex: 1; min-width: 0; }
+.entry-title {
+  font-size: 14px; font-weight: 700; color: var(--yellow); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.entry-sub { font-size: 11px; color: var(--text2); margin-top: 1px; }
+
 /* Key level entry tag */
 .key-level-tag {
   font-size: 10px; font-weight: 600; letter-spacing: .03em;

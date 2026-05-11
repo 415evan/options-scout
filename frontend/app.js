@@ -114,7 +114,7 @@ function toggleWatch(ticker, supportLevels, resistanceLevels, currentPrice) {
   });
 }
 
-function startWatch(ticker, supportLevels, resistanceLevels, lastPrice) {
+function startWatch(ticker, supportLevels, resistanceLevels, lastPrice, silent = false) {
   if (_watchedTickers[ticker]) return;
   const intervalId = setInterval(async () => {
     try {
@@ -143,7 +143,7 @@ function startWatch(ticker, supportLevels, resistanceLevels, lastPrice) {
   }, 30000); // poll every 30s
 
   _watchedTickers[ticker] = { supportLevels, resistanceLevels, lastPrice, intervalId };
-  showToast(`👀 Watching ${ticker} for level breaks`, 'info', 3000);
+  if (!silent) showToast(`👀 Watching ${ticker} for level breaks`, 'info', 3000);
 }
 
 function stopWatch(ticker) {
@@ -175,6 +175,45 @@ function showToast(message, type = 'info', duration = 5000) {
     setTimeout(() => toast.remove(), 400);
   }, duration);
 }
+// ── Individual ticker entry signal ────────────────────────────────────────────
+let _entrySignalData = null;
+
+function renderEntrySignal(ticker, resistanceLevels, supportLevels, currentPrice) {
+  const el = $('entrySignal');
+  if (!el) return;
+
+  // Normalize: levels may be dicts {price,...} or plain numbers
+  const toNum = l => (typeof l === 'object' && l !== null) ? l.price : l;
+  const resistPrices = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice).sort((a,b) => a-b);
+  const supportPrices = (supportLevels   || []).map(toNum).filter(p => p < currentPrice).sort((a,b) => b-a);
+  const entryLevel = resistPrices[0] || null;
+
+  _entrySignalData = { ticker, resistanceLevels: resistPrices, supportLevels: supportPrices, currentPrice };
+
+  if (!entryLevel) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  $('entrySignalTitle').textContent = `Enter ${ticker} calls above ${fmt$(entryLevel)}`;
+  $('entrySignalSub').textContent   = `Nearest resistance at ${fmt$(entryLevel)} — wait for a clean break & hold above this level before buying`;
+  _updateEntryWatchBtn();
+}
+
+function _updateEntryWatchBtn() {
+  const btn = $('entryWatchBtn');
+  if (!btn || !_entrySignalData) return;
+  const watching = !!_watchedTickers[_entrySignalData.ticker];
+  btn.textContent = watching ? '🔔 Watching' : '🔕 Watch';
+  btn.classList.toggle('watch-active', watching);
+  btn.title = watching ? 'Click to stop watching' : 'Click to get an alert when this level breaks';
+}
+
+function toggleTickerWatch() {
+  if (!_entrySignalData) return;
+  const { ticker, supportLevels, resistanceLevels, currentPrice } = _entrySignalData;
+  toggleWatch(ticker, supportLevels, resistanceLevels, currentPrice);
+  _updateEntryWatchBtn();
+}
+window.toggleTickerWatch = toggleTickerWatch;
+
 let _maxPremium = 0;
 
 function applyFilters(picks) {
@@ -342,6 +381,14 @@ function renderBestPicks(data) {
   const timeStr = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   $('picksStatus').textContent = `${data.picks.length} picks from ${data.scanned} tickers — last scan ${timeStr}${data.stale ? ' (refreshing…)' : ''}`;
   renderPicksTable(applyFilters(_allPicks));
+
+  // Auto-watch top 8 picks silently — alert fires automatically when a level breaks
+  _allPicks.slice(0, 8).forEach(pick => {
+    if (!_watchedTickers[pick.ticker] &&
+        (pick.resistance_levels?.length || pick.support_levels?.length)) {
+      startWatch(pick.ticker, pick.support_levels || [], pick.resistance_levels || [], pick.current_price, true);
+    }
+  });
 }
 
 function startPicksCountdown(seconds) {
@@ -553,6 +600,7 @@ async function analyze(ticker) {
     if (data.volume) renderVolume(data.volume);
     window._lastAnalysis = data;
     renderOptions(data.top_calls, data.current_price);
+    renderEntrySignal(data.ticker, data.resistance_levels, data.support_levels, data.current_price);
     showDashboard();
 
     fetch(`/api/news/${ticker}`).then(r=>r.json()).then(nd=>renderNews(nd.news||[])).catch(()=>renderNews([]));
