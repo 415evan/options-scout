@@ -144,6 +144,33 @@ html, body {
   font-size: 11px; color: var(--text2);
 }
 
+/* Watch button */
+.watch-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 6px; font-size: 14px; cursor: pointer; color: var(--text3);
+  transition: all .15s; line-height: 1.4;
+}
+.watch-btn:hover { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-dim); }
+.watch-btn.watch-active { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-dim); }
+
+/* Alert toasts */
+.alert-toast {
+  padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5); cursor: pointer;
+  opacity: 0; transform: translateX(20px);
+  transition: opacity .3s, transform .3s;
+  pointer-events: auto;
+  border-left: 3px solid var(--blue);
+  background: var(--bg2);
+  color: var(--text);
+  max-width: 340px;
+  word-break: break-word;
+}
+.alert-toast-show { opacity: 1; transform: translateX(0); }
+.alert-toast-info { border-left-color: var(--blue); }
+.alert-toast-alert-up { border-left-color: var(--green); background: var(--green-dim); }
+.alert-toast-alert-down { border-left-color: var(--red); background: var(--red-dim); }
+
 /* Picks screen */
 .picks-screen { padding: 24px; display: flex; flex-direction: column; gap: 24px; min-height: calc(100vh - 56px); }
 .picks-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }

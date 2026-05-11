@@ -94,6 +94,87 @@ let _allPicks = [];
 let _activeSector = null;
 let _lastSectorPerf = null;
 let _minPremium = 0;
+
+// ── Level Watch / Price Alerts ────────────────────────────────────────────────
+// _watchedTickers: { TICKER: { supports, resistances, lastPrice, intervalId } }
+const _watchedTickers = {};
+
+function toggleWatch(ticker, supportLevels, resistanceLevels, currentPrice) {
+  if (_watchedTickers[ticker]) {
+    stopWatch(ticker);
+  } else {
+    startWatch(ticker, supportLevels, resistanceLevels, currentPrice);
+  }
+  // Update all watch buttons for this ticker
+  document.querySelectorAll(`.watch-btn[data-t="${ticker}"]`).forEach(btn => {
+    const watching = !!_watchedTickers[ticker];
+    btn.classList.toggle('watch-active', watching);
+    btn.title = watching ? 'Watching — click to cancel' : 'Watch for level break';
+    btn.textContent = watching ? '🔔' : '🔕';
+  });
+}
+
+function startWatch(ticker, supportLevels, resistanceLevels, lastPrice) {
+  if (_watchedTickers[ticker]) return;
+  const intervalId = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/price/${ticker}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.price) return;
+      const price = data.price;
+      const prev  = _watchedTickers[ticker]?.lastPrice;
+      if (prev != null) {
+        // Check resistance breaks (price crossed above)
+        for (const lvl of (resistanceLevels || [])) {
+          if (prev < lvl && price >= lvl) {
+            showLevelAlert(ticker, lvl, 'above', 'resistance');
+          }
+        }
+        // Check support breaks (price crossed below)
+        for (const lvl of (supportLevels || [])) {
+          if (prev > lvl && price <= lvl) {
+            showLevelAlert(ticker, lvl, 'below', 'support');
+          }
+        }
+      }
+      if (_watchedTickers[ticker]) _watchedTickers[ticker].lastPrice = price;
+    } catch (e) { console.warn('Watch poll error:', e); }
+  }, 30000); // poll every 30s
+
+  _watchedTickers[ticker] = { supportLevels, resistanceLevels, lastPrice, intervalId };
+  showToast(`👀 Watching ${ticker} for level breaks`, 'info', 3000);
+}
+
+function stopWatch(ticker) {
+  if (!_watchedTickers[ticker]) return;
+  clearInterval(_watchedTickers[ticker].intervalId);
+  delete _watchedTickers[ticker];
+  showToast(`Stopped watching ${ticker}`, 'info', 2000);
+}
+
+function showLevelAlert(ticker, level, direction, levelType) {
+  const dirWord = direction === 'above' ? 'broke above' : 'dropped below';
+  const emoji   = direction === 'above' ? '🚨' : '⚠️';
+  const msg     = `${emoji} ${ticker} ${dirWord} $${level.toFixed(2)} ${levelType} — enter the call`;
+  showToast(msg, direction === 'above' ? 'alert-up' : 'alert-down', 12000);
+}
+
+function showToast(message, type = 'info', duration = 5000) {
+  const container = $('alertContainer');
+  const toast = document.createElement('div');
+  toast.className = `alert-toast alert-toast-${type}`;
+  toast.textContent = message;
+  toast.style.pointerEvents = 'auto';
+  toast.onclick = () => toast.remove();
+  container.appendChild(toast);
+  // Animate in
+  requestAnimationFrame(() => toast.classList.add('alert-toast-show'));
+  setTimeout(() => {
+    toast.classList.remove('alert-toast-show');
+    setTimeout(() => toast.remove(), 400);
+  }, duration);
+}
 let _maxPremium = 0;
 
 function applyFilters(picks) {
@@ -184,7 +265,7 @@ function renderPicksTable(picks) {
   tbody.innerHTML = '';
   if (!picks.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="12" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
+    tr.innerHTML = `<td colspan="13" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
       No picks found in ${_activeSector || 'this sector'} this scan — try ↻ Refresh or select another sector.
     </td>`;
     tbody.appendChild(tr);
@@ -222,12 +303,21 @@ function renderPicksTable(picks) {
       </td>
       <td><span class="conviction-badge ${convictionClass(pick.conviction)}" title="${why}">${pick.conviction}</span></td>
       <td class="why-cell" title="${why}">${why}</td>
+      <td><button class="watch-btn${_watchedTickers[pick.ticker] ? ' watch-active' : ''}" data-t="${pick.ticker}" title="${_watchedTickers[pick.ticker] ? 'Watching — click to cancel' : 'Watch for level break'}">${_watchedTickers[pick.ticker] ? '🔔' : '🔕'}</button></td>
       <td><button class="btn-secondary picks-drill-btn" data-t="${pick.ticker}">Details →</button></td>`;
     tbody.appendChild(tr);
   });
   tbody.querySelectorAll('.picks-drill-btn').forEach(btn =>
     btn.addEventListener('click', () => analyze(btn.dataset.t))
   );
+  tbody.querySelectorAll('.watch-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ticker = btn.dataset.t;
+      const pick = _allPicks.find(p => p.ticker === ticker);
+      if (!pick) return;
+      toggleWatch(ticker, pick.support_levels || [], pick.resistance_levels || [], pick.current_price);
+    });
+  });
   $('picksLoading').classList.add('hidden');
   $('picksTable').classList.remove('hidden');
 }
