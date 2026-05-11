@@ -277,7 +277,13 @@ def analyze_ticker(ticker):
                 res = score_call(row.to_dict(), current_price, supports, resistances, dte)
                 if not res: continue
                 sc, reasons = res
-                bid = float(row.get('bid', 0) or 0); ask = float(row.get('ask', 0) or 0)
+                bid  = float(row.get('bid', 0) or 0)
+                ask  = float(row.get('ask', 0) or 0)
+                last = float(row.get('lastPrice', 0) or 0)
+                # Market closed or stale quote — use lastPrice as proxy
+                if bid <= 0 and ask <= 0 and last > 0:
+                    bid = round(last * 0.95, 2)
+                    ask = round(last * 1.05, 2)
                 best_calls.append({
                     'strike': float(row['strike']), 'expiry': ds, 'dte': dte,
                     'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid+ask)/2, 2),
