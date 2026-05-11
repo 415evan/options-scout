@@ -18,6 +18,14 @@ import sys
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _sf(v, default=0.0):
+    """NaN/None-safe float conversion — numpy.nan is truthy so `x or 0` doesn't work."""
+    try:
+        f = float(v)
+        return default if (f != f) else f  # f != f is True only for NaN
+    except (TypeError, ValueError):
+        return default
+
 
 # ─── yfinance retry + per-ticker cache ───────────────────────────────────────
 
@@ -133,18 +141,12 @@ def add_key_levels(df, current_price):
 # ─── Option Scoring ───────────────────────────────────────────────────────────
 
 def score_call(opt, current_price, supports, resistances, dte):
-    strike     = float(opt.get('strike', 0))
-    bid        = float(opt.get('bid', 0) or 0)
-    ask        = float(opt.get('ask', 0) or 0)
-    last_price = float(opt.get('lastPrice', 0) or 0)
-    vol    = int(opt.get('volume', 0) or 0)
-    oi     = int(opt.get('openInterest', 0) or 0)
-    iv     = float(opt.get('impliedVolatility', 0) or 0)
-
-    # When market is closed bid/ask are 0 — fall back to lastPrice
-    if bid <= 0 and ask <= 0 and last_price > 0:
-        bid = last_price * 0.95
-        ask = last_price * 1.05
+    strike = _sf(opt.get('strike'))
+    bid    = _sf(opt.get('bid'))
+    ask    = _sf(opt.get('ask'))
+    vol    = int(_sf(opt.get('volume')))
+    oi     = int(_sf(opt.get('openInterest')))
+    iv     = _sf(opt.get('impliedVolatility'))
 
     if strike <= 0 or ask <= 0:
         return None
@@ -274,24 +276,27 @@ def analyze_ticker(ticker):
             if chain is None or chain.empty: continue
             chain = chain[(chain['strike'] >= current_price * 0.90) & (chain['strike'] <= current_price * 1.60)]
             for _, row in chain.iterrows():
-                res = score_call(row.to_dict(), current_price, supports, resistances, dte)
-                if not res: continue
-                sc, reasons = res
-                bid  = float(row.get('bid', 0) or 0)
-                ask  = float(row.get('ask', 0) or 0)
-                last = float(row.get('lastPrice', 0) or 0)
-                # Market closed or stale quote — use lastPrice as proxy
+                opt  = row.to_dict()
+                bid  = _sf(opt.get('bid'))
+                ask  = _sf(opt.get('ask'))
+                last = _sf(opt.get('lastPrice'))
+                # Stale/closed market: bid & ask are 0/NaN, use lastPrice as proxy
                 if bid <= 0 and ask <= 0 and last > 0:
                     bid = round(last * 0.95, 2)
                     ask = round(last * 1.05, 2)
+                    opt['bid'] = bid
+                    opt['ask'] = ask
+                res = score_call(opt, current_price, supports, resistances, dte)
+                if not res: continue
+                sc, reasons = res
                 best_calls.append({
-                    'strike': float(row['strike']), 'expiry': ds, 'dte': dte,
+                    'strike': _sf(opt.get('strike')), 'expiry': ds, 'dte': dte,
                     'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid+ask)/2, 2),
-                    'volume': int(row.get('volume', 0) or 0),
-                    'open_interest': int(row.get('openInterest', 0) or 0),
-                    'iv': round(float(row.get('impliedVolatility', 0) or 0) * 100, 1),
+                    'volume': int(_sf(opt.get('volume'))),
+                    'open_interest': int(_sf(opt.get('openInterest'))),
+                    'iv': round(_sf(opt.get('impliedVolatility')) * 100, 1),
                     'score': sc, 'reasons': reasons,
-                    'itm': bool(row.get('inTheMoney', False)),
+                    'itm': bool(opt.get('inTheMoney', False)),
                 })
         except Exception as e:
             logger.warning('chain err %s %s: %s', ticker, ds, e); continue
