@@ -29,20 +29,25 @@ def _sf(v, default=0.0):
 
 # ─── yfinance retry + per-ticker cache ───────────────────────────────────────
 
-def _yf_call(fn, retries=6, base_delay=3.0):
-    """Call a yfinance function, retrying on 429 / rate-limit errors."""
+# Global semaphore: at most 2 yfinance network calls at once across all threads
+_yf_sem = threading.Semaphore(2)
+
+def _yf_call(fn, retries=6, base_delay=4.0):
+    """Call a yfinance function, retrying on 429 / rate-limit errors.
+    Holds a global semaphore so at most 2 threads hit yfinance simultaneously."""
     for attempt in range(retries):
-        try:
-            return fn()
-        except Exception as e:
-            msg = str(e).lower()
-            if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit', 'temporarily')):
-                if attempt < retries - 1:
-                    delay = min(base_delay * (2 ** attempt), 60)  # cap at 60s
-                    logger.warning('yf rate limited — retry in %.0fs (attempt %d/%d)', delay, attempt + 1, retries)
-                    time.sleep(delay)
-                    continue
-            raise
+        with _yf_sem:
+            try:
+                return fn()
+            except Exception as e:
+                msg = str(e).lower()
+                if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit', 'temporarily')):
+                    if attempt < retries - 1:
+                        delay = min(base_delay * (2 ** attempt), 60)  # cap at 60s
+                        logger.warning('yf rate limited — retry in %.0fs (attempt %d/%d)', delay, attempt + 1, retries)
+                        time.sleep(delay)
+                        continue
+                raise
     return None
 
 
@@ -553,9 +558,13 @@ def _do_refresh():
     logger.info('Scanning %d tickers across %d sectors', len(scan_list), len(SECTOR_ETFS))
 
     results = []
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futs = {ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0)): t
-                for t, sec in scan_list}
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futs = {}
+        for i, (t, sec) in enumerate(scan_list):
+            # Stagger submissions by 0.5s so threads don't all fire simultaneously
+            if i > 0 and i % 2 == 0:
+                time.sleep(0.5)
+            futs[ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0))] = t
         for fut in as_completed(futs):
             r = fut.result()
             if r:
