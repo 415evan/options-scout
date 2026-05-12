@@ -535,23 +535,33 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
     }
 
     // Per-strike entry signal:
-    // Find the highest resistance between current price and this strike —
-    // that's the "last gate" the stock must break through to reach your strike.
-    // If no resistance sits between price and strike, use the nearest one above price.
+    // Combine known resistance levels with auto $5-interval round numbers between
+    // current price and the strike — find the highest one below the strike.
+    // This gives a unique "last gate" for every strike price.
     const toNum = l => (typeof l === 'object' && l !== null) ? l.price : l;
-    const resPrices = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice).sort((a,b) => a-b);
-    const belowStrike = resPrices.filter(p => p < opt.strike);
-    // "last gate" = highest resistance below this strike (or nearest above price as fallback)
-    const entryLvl = belowStrike.length ? belowStrike[belowStrike.length - 1] : (resPrices[0] || null);
+    const knownRes = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice && p < opt.strike);
+
+    // Generate $5 round-number levels between current price and strike
+    const roundLevels = [];
+    const step = currentPrice >= 500 ? 10 : currentPrice >= 100 ? 5 : 2.5;
+    const roundStart = Math.ceil(currentPrice / step) * step;
+    for (let lvl = roundStart; lvl < opt.strike; lvl += step) {
+      roundLevels.push(parseFloat(lvl.toFixed(2)));
+    }
+
+    // Merge, deduplicate (within $1), sort
+    const allLevels = [...knownRes, ...roundLevels]
+      .filter((v, i, arr) => arr.findIndex(x => Math.abs(x - v) < 1) === i)
+      .sort((a, b) => a - b);
+
+    // Last gate = highest level below the strike
+    const entryLvl = allLevels.length ? allLevels[allLevels.length - 1] : null;
+
     let entryCellHtml;
     if (!entryLvl) {
       entryCellHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
-    } else if (opt.strike > entryLvl) {
-      // Normal: stock must break this level before the strike is realistic
-      entryCellHtml = `<span class="entry-level-badge" title="Enter once price closes above ${fmt$(entryLvl)} — last resistance before your $${opt.strike} strike">⚡ &gt; ${fmt$(entryLvl)}</span>`;
     } else {
-      // Strike is at or below the entry level — conservative, enter on first break
-      entryCellHtml = `<span class="entry-level-badge" title="Enter once price closes above ${fmt$(entryLvl)}">⚡ &gt; ${fmt$(entryLvl)}</span>`;
+      entryCellHtml = `<span class="entry-level-badge" title="Enter once price closes above ${fmt$(entryLvl)} — last key level before your ${fmt$(opt.strike)} strike">⚡ &gt; ${fmt$(entryLvl)}</span>`;
     }
 
     tr.innerHTML = `
