@@ -363,13 +363,13 @@ function renderPicksTable(picks) {
     const pickRes  = (pick.resistance_levels || []).filter(l => l > pick.current_price);
     const idealPickEntry = pick.strike * 0.85;
     let   pickEntry;
-    if (idealPickEntry > pick.current_price + pickStep) {
-      pickEntry = Math.round(idealPickEntry / pickStep) * pickStep;
+    if (idealPickEntry > pick.current_price) {
+      pickEntry = Math.ceil(idealPickEntry / pickStep) * pickStep;
       const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.02);
       if (pickNearby) pickEntry = pickNearby;
     } else {
       const fallback = pickRes.length ? pickRes[0] : Math.ceil((pick.current_price + pickStep) / pickStep) * pickStep;
-      pickEntry = Math.round(fallback / pickStep) * pickStep;
+      pickEntry = fallback;
     }
     if (pickEntry <= pick.current_price) pickEntry = Math.ceil((pick.current_price + pickStep) / pickStep) * pickStep;
     if (pickEntry >= pick.strike)        pickEntry = parseFloat((pick.strike - pickStep).toFixed(2));
@@ -556,18 +556,18 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
     // Use 85% of strike as the entry target — if it's already below current
     // price (close OTM strikes), fall back to first resistance above current.
     const idealEntry = opt.strike * 0.85;
-    const firstRes = knownRes.length ? knownRes[0] : Math.ceil((currentPrice + step) / step) * step;
 
     let entryLvl;
-    if (idealEntry > currentPrice + step) {
-      // Far OTM: show the meaningful entry level (85% of strike)
-      entryLvl = Math.round(idealEntry / step) * step;
-      // Prefer a known resistance if one is very close (within 2%)
+    if (idealEntry > currentPrice) {
+      // 85% of strike is above current price — use it, rounded UP to next step
+      entryLvl = Math.ceil(idealEntry / step) * step;
+      // Snap to a known resistance if one is within 2%
       const nearby = knownRes.find(r => Math.abs(r - entryLvl) / entryLvl < 0.02);
       if (nearby) entryLvl = nearby;
     } else {
-      // Near OTM: stock already close to strike, enter on first resistance break
-      entryLvl = Math.round(firstRes / step) * step;
+      // Strike is near ATM — enter on the first resistance break above current price
+      const firstRes = knownRes.length ? knownRes[0] : Math.ceil((currentPrice + step) / step) * step;
+      entryLvl = firstRes;
     }
 
     // Must be above current price and strictly below strike
