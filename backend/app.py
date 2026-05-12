@@ -420,10 +420,11 @@ SECTOR_TICKERS = {
     ],
 }
 
-PICKS_TTL = 90   # seconds — longer because we scan more tickers
+PICKS_TTL = 300  # 5 min cache — avoids constant rescans
 
 _picks_cache     = {'data': None, 'ts': 0, 'refreshing': False}
 _picks_lock      = threading.Lock()
+_picks_ready     = threading.Event()   # fired when a refresh completes
 _sector_cache    = {'perf': None, 'ts': 0}
 _sector_lock     = threading.Lock()
 SECTOR_CACHE_TTL = 1800  # 30 min
@@ -454,10 +455,10 @@ def get_sector_performance():
 
 
 def build_scan_list(sector_perf):
-    """Return ~90 tickers weighted toward hot sectors, min 6 per sector."""
+    """Return ~30 tickers weighted toward hot sectors — fast enough for <15s scan."""
     ranked = list(sector_perf.keys())
-    # Slots: top sector 14, 2nd 12, 3rd 10, 4th 8, rest min 6
-    slots  = [14, 12, 10, 8, 6, 6, 6, 6, 6, 6, 6, 6]
+    # Slots: top 2 sectors get 4, next 2 get 3, rest get 2
+    slots  = [4, 4, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2]
     seen, result = set(), []
 
     for i, sector in enumerate(ranked):
@@ -514,8 +515,80 @@ def conviction_reason(top, sector, sector_ret, vol_signal):
     return reasons[0] if reasons else 'Multiple technical signals aligned'
 
 
-def _scan_one_with_sector(ticker, sector, sector_ret):
+def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
     try:
+        # Use prefetched history when available to skip one yfinance call
+        if prefetch_hist is not None and not prefetch_hist.empty:
+            cached = _get_cached(ticker)
+            if not cached:
+                # Inject prefetched history into a lightweight analyze
+                try:
+                    hist = prefetch_hist.dropna()
+                    if not hist.empty:
+                        stock = yf.Ticker(ticker)
+                        current_price = float(hist['Close'].iloc[-1])
+                        sr_raw   = find_sr_levels(hist)
+                        supports    = sorted([l for l in sr_raw if l['type']=='support'    and l['price'] < current_price*1.03], key=lambda x: x['price'], reverse=True)[:4]
+                        resistances = sorted([l for l in sr_raw if l['type']=='resistance' and l['price'] > current_price*0.97], key=lambda x: x['price'])[:4]
+                        exp_dates = _yf_call(lambda: list(stock.options)[:4]) or []
+                        today = datetime.now()
+                        best_calls = []
+                        for ds in exp_dates:
+                            exp = datetime.strptime(ds, '%Y-%m-%d')
+                            dte = (exp - today).days
+                            if dte < 0 or dte > 60: continue
+                            try:
+                                chain = _yf_call(lambda d=ds: stock.option_chain(d).calls)
+                                if chain is None or chain.empty: continue
+                                chain = chain[(chain['strike'] >= current_price*0.90) & (chain['strike'] <= current_price*1.60)]
+                                for _, row in chain.iterrows():
+                                    opt  = row.to_dict()
+                                    bid  = _sf(opt.get('bid'))
+                                    ask  = _sf(opt.get('ask'))
+                                    last = _sf(opt.get('lastPrice'))
+                                    if bid <= 0 and ask <= 0 and last > 0:
+                                        bid = round(last*0.95, 2); ask = round(last*1.05, 2)
+                                        opt['bid'] = bid; opt['ask'] = ask
+                                    res = score_call(opt, current_price, supports, resistances, dte)
+                                    if not res: continue
+                                    sc, reasons = res
+                                    best_calls.append({
+                                        'strike': _sf(opt.get('strike')), 'expiry': ds, 'dte': dte,
+                                        'bid': round(bid,2), 'ask': round(ask,2), 'mid': round((bid+ask)/2,2),
+                                        'volume': int(_sf(opt.get('volume'))),
+                                        'open_interest': int(_sf(opt.get('openInterest'))),
+                                        'iv': round(_sf(opt.get('impliedVolatility'))*100, 1),
+                                        'score': sc, 'reasons': reasons,
+                                        'itm': bool(opt.get('inTheMoney', False)),
+                                    })
+                            except Exception as e:
+                                logger.warning('fast chain %s %s: %s', ticker, ds, e); continue
+                        if best_calls:
+                            best_calls.sort(key=lambda x: x['score'], reverse=True)
+                            avg_vol  = float(hist['Volume'].mean()) if not hist.empty else 0
+                            today_v  = int(hist['Volume'].iloc[-1]) if not hist.empty else 0
+                            ratio    = round(today_v / avg_vol, 2) if avg_vol > 0 else 1.0
+                            vol_sig  = 'High' if ratio > 1.4 else ('Low' if ratio < 0.6 else 'Normal')
+                            top      = best_calls[0]
+                            conf     = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret)
+                            return {
+                                'ticker': ticker, 'company_name': ticker,
+                                'current_price': round(current_price, 2),
+                                'sector': sector, 'sector_return': sector_ret,
+                                'strike': top['strike'], 'expiry': top['expiry'], 'dte': top['dte'],
+                                'bid': top['bid'], 'ask': top['ask'], 'mid': top['mid'],
+                                'volume': top['volume'], 'open_interest': top['open_interest'],
+                                'iv': top['iv'], 'score': top['score'],
+                                'confidence': conf, 'conviction': conviction_label(conf),
+                                'conviction_reason': conviction_reason(top, sector, sector_ret, vol_sig),
+                                'signals': top['reasons'][:4], 'volume_signal': vol_sig,
+                                'itm': top.get('itm', False),
+                                'support_levels':    [l['price'] for l in supports[:3]],
+                                'resistance_levels': [l['price'] for l in resistances[:3]],
+                            }
+                except Exception as e:
+                    logger.warning('fast scan %s: %s — falling back', ticker, e)
+
         r = analyze_ticker(ticker)
         if r.get('error') or not r.get('top_calls'):
             return None
@@ -555,16 +628,35 @@ def _scan_one_with_sector(ticker, sector, sector_ret):
 def _do_refresh():
     sector_perf = get_sector_performance()
     scan_list   = build_scan_list(sector_perf)
-    logger.info('Scanning %d tickers across %d sectors', len(scan_list), len(SECTOR_ETFS))
+    tickers     = [t for t, _ in scan_list]
+    logger.info('Scanning %d tickers (batch mode)', len(tickers))
 
+    # ── Batch-download all price histories in one request (huge speedup) ──────
+    hist_map = {}
+    try:
+        if len(tickers) == 1:
+            df = yf.download(tickers[0], period='1mo', auto_adjust=True, progress=False)
+            hist_map[tickers[0]] = df if not df.empty else None
+        else:
+            raw = yf.download(tickers, period='1mo', group_by='ticker',
+                              auto_adjust=True, progress=False)
+            for t in tickers:
+                try:
+                    df = raw[t].dropna() if t in raw.columns.get_level_values(0) else pd.DataFrame()
+                    hist_map[t] = df if not df.empty else None
+                except Exception:
+                    hist_map[t] = None
+    except Exception as e:
+        logger.warning('Batch download failed (%s) — falling back to individual calls', e)
+        hist_map = {t: None for t in tickers}
+
+    # ── Scan each ticker using pre-fetched history ────────────────────────────
     results = []
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        futs = {}
-        for i, (t, sec) in enumerate(scan_list):
-            # Stagger submissions by 0.5s so threads don't all fire simultaneously
-            if i > 0 and i % 2 == 0:
-                time.sleep(0.5)
-            futs[ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0))] = t
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {
+            ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0), hist_map.get(t)): t
+            for t, sec in scan_list
+        }
         for fut in as_completed(futs):
             r = fut.result()
             if r:
@@ -581,6 +673,8 @@ def _do_refresh():
         _picks_cache['data']       = out
         _picks_cache['ts']         = time.time()
         _picks_cache['refreshing'] = False
+    _picks_ready.set()
+    _picks_ready.clear()
     return out
 
 
@@ -739,11 +833,14 @@ def best_picks():
             _picks_cache['refreshing'] = True
 
     if already:
-        # another request is already refreshing — return stale cache if we have it
+        # A refresh is already running — wait for it instead of starting a second one
+        _picks_ready.wait(timeout=120)
         with _picks_lock:
             if _picks_cache['data']:
-                d = dict(_picks_cache['data']); d['stale'] = True
-                return jsonify(d)
+                return jsonify(_picks_cache['data'])
+        # Timed out with no data — run it ourselves
+        with _picks_lock:
+            _picks_cache['refreshing'] = True
 
     out = _do_refresh()
     return jsonify(out)
