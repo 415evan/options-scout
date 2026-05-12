@@ -360,7 +360,7 @@ function renderPicksTable(picks) {
 
     // Entry signal for picks table: 25% of the way from current price to strike
     const pickStep = pick.current_price >= 500 ? 10 : pick.current_price >= 100 ? 5 : 2.5;
-    const pickRaw  = pick.current_price + (pick.strike - pick.current_price) * 0.25;
+    const pickRaw  = pick.current_price + (pick.strike - pick.current_price) * 0.30;
     let   pickEntry = Math.round(pickRaw / pickStep) * pickStep;
     const pickRes   = (pick.resistance_levels || []).filter(l => l > pick.current_price);
     const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.02);
@@ -545,7 +545,7 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
     const knownRes = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice);
     const step = currentPrice >= 500 ? 10 : currentPrice >= 100 ? 5 : 2.5;
 
-    const rawTarget = currentPrice + (opt.strike - currentPrice) * 0.25;
+    const rawTarget = currentPrice + (opt.strike - currentPrice) * 0.30;
     let entryLvl = Math.round(rawTarget / step) * step;
 
     // Only snap to a known resistance if it's very close (within 2%) to our computed level
