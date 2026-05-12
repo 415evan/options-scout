@@ -515,24 +515,68 @@ def conviction_reason(top, sector, sector_ret, vol_signal):
     return reasons[0] if reasons else 'Multiple technical signals aligned'
 
 
+# DTE buckets — one pick per bucket per ticker so every filter tab has a full list
+_DTE_BUCKETS = [(0, 7), (8, 14), (15, 30), (31, 60)]
+
+def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
+                      vol_sig, best_calls, supports, resistances):
+    """Return one pick dict per DTE bucket (Weekly/2-Week/Monthly/Swing)."""
+    res_prices = [l['price'] for l in resistances[:3]]
+    sup_prices = [l['price'] for l in supports[:3]]
+    picks = []
+    for dte_min, dte_max in _DTE_BUCKETS:
+        bucket = sorted([c for c in best_calls if dte_min <= c['dte'] <= dte_max],
+                        key=lambda x: x['score'], reverse=True)
+        if not bucket:
+            continue
+        top  = bucket[0]
+        conf = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret)
+        picks.append({
+            'ticker':            ticker,
+            'company_name':      company_name,
+            'current_price':     round(current_price, 2),
+            'sector':            sector,
+            'sector_return':     sector_ret,
+            'strike':            top['strike'],
+            'expiry':            top['expiry'],
+            'dte':               top['dte'],
+            'bid':               top['bid'],
+            'ask':               top['ask'],
+            'mid':               top['mid'],
+            'volume':            top['volume'],
+            'open_interest':     top['open_interest'],
+            'iv':                top['iv'],
+            'score':             top['score'],
+            'confidence':        conf,
+            'conviction':        conviction_label(conf),
+            'conviction_reason': conviction_reason(top, sector, sector_ret, vol_sig),
+            'signals':           top['reasons'][:4],
+            'volume_signal':     vol_sig,
+            'itm':               top.get('itm', False),
+            'support_levels':    sup_prices,
+            'resistance_levels': res_prices,
+        })
+    return picks
+
+
 def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
+    """Scan one ticker; returns a LIST of picks (one per DTE bucket)."""
     try:
-        # Use prefetched history when available to skip one yfinance call
+        # ── Fast path: use pre-fetched batch history ──────────────────────────
         if prefetch_hist is not None and not prefetch_hist.empty:
             cached = _get_cached(ticker)
             if not cached:
-                # Inject prefetched history into a lightweight analyze
                 try:
                     hist = prefetch_hist.dropna()
                     if not hist.empty:
                         stock = yf.Ticker(ticker)
                         current_price = float(hist['Close'].iloc[-1])
-                        sr_raw   = find_sr_levels(hist)
-                        supports    = sorted([l for l in sr_raw if l['type']=='support'    and l['price'] < current_price*1.03], key=lambda x: x['price'], reverse=True)[:4]
-                        resistances = sorted([l for l in sr_raw if l['type']=='resistance' and l['price'] > current_price*0.97], key=lambda x: x['price'])[:4]
-                        exp_dates = _yf_call(lambda: list(stock.options)[:4]) or []
-                        today = datetime.now()
-                        best_calls = []
+                        sr_raw      = find_sr_levels(hist)
+                        supports    = sorted([l for l in sr_raw if l['type'] == 'support'    and l['price'] < current_price * 1.03], key=lambda x: x['price'], reverse=True)[:4]
+                        resistances = sorted([l for l in sr_raw if l['type'] == 'resistance' and l['price'] > current_price * 0.97], key=lambda x: x['price'])[:4]
+                        exp_dates   = _yf_call(lambda: list(stock.options)) or []
+                        today       = datetime.now()
+                        best_calls  = []
                         for ds in exp_dates:
                             exp = datetime.strptime(ds, '%Y-%m-%d')
                             dte = (exp - today).days
@@ -540,89 +584,51 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                             try:
                                 chain = _yf_call(lambda d=ds: stock.option_chain(d).calls)
                                 if chain is None or chain.empty: continue
-                                chain = chain[(chain['strike'] >= current_price*0.90) & (chain['strike'] <= current_price*1.60)]
+                                chain = chain[(chain['strike'] >= current_price * 0.90) & (chain['strike'] <= current_price * 1.60)]
                                 for _, row in chain.iterrows():
                                     opt  = row.to_dict()
-                                    bid  = _sf(opt.get('bid'))
-                                    ask  = _sf(opt.get('ask'))
+                                    bid  = _sf(opt.get('bid'));  ask = _sf(opt.get('ask'))
                                     last = _sf(opt.get('lastPrice'))
                                     if bid <= 0 and ask <= 0 and last > 0:
-                                        bid = round(last*0.95, 2); ask = round(last*1.05, 2)
+                                        bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
                                         opt['bid'] = bid; opt['ask'] = ask
                                     res = score_call(opt, current_price, supports, resistances, dte)
                                     if not res: continue
                                     sc, reasons = res
                                     best_calls.append({
                                         'strike': _sf(opt.get('strike')), 'expiry': ds, 'dte': dte,
-                                        'bid': round(bid,2), 'ask': round(ask,2), 'mid': round((bid+ask)/2,2),
+                                        'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid + ask) / 2, 2),
                                         'volume': int(_sf(opt.get('volume'))),
                                         'open_interest': int(_sf(opt.get('openInterest'))),
-                                        'iv': round(_sf(opt.get('impliedVolatility'))*100, 1),
+                                        'iv': round(_sf(opt.get('impliedVolatility')) * 100, 1),
                                         'score': sc, 'reasons': reasons,
                                         'itm': bool(opt.get('inTheMoney', False)),
                                     })
                             except Exception as e:
                                 logger.warning('fast chain %s %s: %s', ticker, ds, e); continue
                         if best_calls:
-                            best_calls.sort(key=lambda x: x['score'], reverse=True)
-                            avg_vol  = float(hist['Volume'].mean()) if not hist.empty else 0
-                            today_v  = int(hist['Volume'].iloc[-1]) if not hist.empty else 0
-                            ratio    = round(today_v / avg_vol, 2) if avg_vol > 0 else 1.0
-                            vol_sig  = 'High' if ratio > 1.4 else ('Low' if ratio < 0.6 else 'Normal')
-                            top      = best_calls[0]
-                            conf     = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret)
-                            return {
-                                'ticker': ticker, 'company_name': ticker,
-                                'current_price': round(current_price, 2),
-                                'sector': sector, 'sector_return': sector_ret,
-                                'strike': top['strike'], 'expiry': top['expiry'], 'dte': top['dte'],
-                                'bid': top['bid'], 'ask': top['ask'], 'mid': top['mid'],
-                                'volume': top['volume'], 'open_interest': top['open_interest'],
-                                'iv': top['iv'], 'score': top['score'],
-                                'confidence': conf, 'conviction': conviction_label(conf),
-                                'conviction_reason': conviction_reason(top, sector, sector_ret, vol_sig),
-                                'signals': top['reasons'][:4], 'volume_signal': vol_sig,
-                                'itm': top.get('itm', False),
-                                'support_levels':    [l['price'] for l in supports[:3]],
-                                'resistance_levels': [l['price'] for l in resistances[:3]],
-                            }
+                            avg_vol = float(hist['Volume'].mean()) if not hist.empty else 0
+                            today_v = int(hist['Volume'].iloc[-1])  if not hist.empty else 0
+                            ratio   = round(today_v / avg_vol, 2) if avg_vol > 0 else 1.0
+                            vol_sig = 'High' if ratio > 1.4 else ('Low' if ratio < 0.6 else 'Normal')
+                            return _picks_from_calls(ticker, ticker, current_price, sector, sector_ret,
+                                                     vol_sig, best_calls, supports, resistances)
                 except Exception as e:
                     logger.warning('fast scan %s: %s — falling back', ticker, e)
 
+        # ── Slow path: full analyze_ticker ────────────────────────────────────
         r = analyze_ticker(ticker)
         if r.get('error') or not r.get('top_calls'):
-            return None
-        top     = r['top_calls'][0]
+            return []
         vol_sig = r['volume']['signal']
-        conf    = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret)
-        return {
-            'ticker':          ticker,
-            'company_name':    r['company_name'],
-            'current_price':   r['current_price'],
-            'sector':          sector,
-            'sector_return':   sector_ret,
-            'strike':          top['strike'],
-            'expiry':          top['expiry'],
-            'dte':             top['dte'],
-            'bid':             top['bid'],
-            'ask':             top['ask'],
-            'mid':             top['mid'],
-            'volume':          top['volume'],
-            'open_interest':   top['open_interest'],
-            'iv':              top['iv'],
-            'score':           top['score'],
-            'confidence':      conf,
-            'conviction':      conviction_label(conf),
-            'conviction_reason': conviction_reason(top, sector, sector_ret, vol_sig),
-            'signals':         top['reasons'][:4],
-            'volume_signal':   vol_sig,
-            'itm':             top.get('itm', False),
-            'support_levels':    [l['price'] for l in r.get('support_levels', [])[:3]],
-            'resistance_levels': [l['price'] for l in r.get('resistance_levels', [])[:3]],
-        }
+        return _picks_from_calls(
+            ticker, r['company_name'], r['current_price'], sector, sector_ret,
+            vol_sig, r['top_calls'],
+            r.get('support_levels', []), r.get('resistance_levels', []),
+        )
     except Exception as e:
         logger.warning('picks scan %s: %s', ticker, e)
-        return None
+        return []
 
 
 def _do_refresh():
@@ -658,9 +664,9 @@ def _do_refresh():
             for t, sec in scan_list
         }
         for fut in as_completed(futs):
-            r = fut.result()
-            if r:
-                results.append(r)
+            picks = fut.result()
+            if picks:
+                results.extend(picks)  # each ticker returns a list (one per DTE bucket)
 
     results.sort(key=lambda x: x['confidence'], reverse=True)
     out = {
