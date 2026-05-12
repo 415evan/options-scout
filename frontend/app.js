@@ -363,7 +363,7 @@ function renderPicksTable(picks) {
     const pickRaw  = pick.current_price + (pick.strike - pick.current_price) * 0.25;
     let   pickEntry = Math.round(pickRaw / pickStep) * pickStep;
     const pickRes   = (pick.resistance_levels || []).filter(l => l > pick.current_price);
-    const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.15);
+    const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.02);
     if (pickNearby) pickEntry = pickNearby;
     if (pickEntry <= pick.current_price) pickEntry = pick.current_price + pickStep;
     if (pickEntry >= pick.strike) pickEntry = pick.strike - pickStep;
@@ -539,24 +539,22 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
     }
 
     // Per-strike entry signal:
-    // Enter when the stock has moved ~25% of the way from current price to the strike.
-    // This confirms momentum early while leaving 75% of the move left to capture profit.
-    // Snap to the nearest round number and cross-check against known resistance levels.
+    // 25% of the way from current price to this strike, snapped to nearest round number.
+    // Only override with a known resistance if it's within 2% of the computed level.
     const toNum = l => (typeof l === 'object' && l !== null) ? l.price : l;
     const knownRes = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice);
     const step = currentPrice >= 500 ? 10 : currentPrice >= 100 ? 5 : 2.5;
 
-    // 25% of the way to strike, snapped to nearest round number
     const rawTarget = currentPrice + (opt.strike - currentPrice) * 0.25;
     let entryLvl = Math.round(rawTarget / step) * step;
 
-    // If a known resistance sits within 15% of our computed level, prefer it
-    const nearby = knownRes.find(r => Math.abs(r - entryLvl) / entryLvl < 0.15);
+    // Only snap to a known resistance if it's very close (within 2%) to our computed level
+    const nearby = knownRes.find(r => Math.abs(r - entryLvl) / entryLvl < 0.02);
     if (nearby) entryLvl = nearby;
 
-    // Must be above current price and below strike
+    // Must be above current price and strictly below strike
     if (entryLvl <= currentPrice) entryLvl = Math.ceil((currentPrice + step) / step) * step;
-    if (entryLvl >= opt.strike)  entryLvl = opt.strike - step;
+    if (entryLvl >= opt.strike)   entryLvl = parseFloat((opt.strike - step).toFixed(2));
     entryLvl = parseFloat(entryLvl.toFixed(2));
 
     const upside = (((opt.strike - entryLvl) / entryLvl) * 100).toFixed(0);
@@ -640,6 +638,9 @@ async function analyze(ticker) {
   ticker = ticker.trim().toUpperCase();
   if (!ticker) return;
   $('analyzeBtn').disabled = true;
+  _entrySignalData = null;
+  const esBanner = $('entrySignal');
+  if (esBanner) esBanner.classList.add('hidden');
   showLoading('Fetching market data for ' + ticker + '…');
   try {
     const res = await fetch(`/api/analyze/${ticker}`);
