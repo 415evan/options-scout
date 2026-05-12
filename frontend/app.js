@@ -358,18 +358,22 @@ function renderPicksTable(picks) {
     const sectorSign = sectorRet >= 0 ? '+' : '';
     const why = pick.conviction_reason || '';
 
-    // Key level: nearest resistance above price = entry trigger
-    const resistances = (pick.resistance_levels || []).filter(l => l > pick.current_price).sort((a,b) => a-b);
-    const supports    = (pick.support_levels    || []).filter(l => l < pick.current_price).sort((a,b) => b-a);
-    const entryLevel  = resistances[0] || null;   // lowest resistance above price
-    const keyLevelHtml = entryLevel
-      ? `<div class="key-level-tag" title="Enter the call if price closes above $${entryLevel.toFixed(2)}">⚡ Enter &gt; ${fmt$(entryLevel)}</div>`
-      : '';
+    // Entry signal for picks table: 25% of the way from current price to strike
+    const pickStep = pick.current_price >= 500 ? 10 : pick.current_price >= 100 ? 5 : 2.5;
+    const pickRaw  = pick.current_price + (pick.strike - pick.current_price) * 0.25;
+    let   pickEntry = Math.round(pickRaw / pickStep) * pickStep;
+    const pickRes   = (pick.resistance_levels || []).filter(l => l > pick.current_price);
+    const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.15);
+    if (pickNearby) pickEntry = pickNearby;
+    if (pickEntry <= pick.current_price) pickEntry = pick.current_price + pickStep;
+    if (pickEntry >= pick.strike) pickEntry = pick.strike - pickStep;
+    pickEntry = parseFloat(pickEntry.toFixed(2));
+    const pickUpside = (((pick.strike - pickEntry) / pickEntry) * 100).toFixed(0);
 
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td><strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
-      <td class="entry-cell">${entryLevel ? `<span class="entry-level-badge" title="Enter the call if price closes above ${fmt$(entryLevel)}">⚡ &gt; ${fmt$(entryLevel)}</span>` : '<span style="color:var(--text3);font-size:11px">—</span>'}</td>
+      <td class="entry-cell">${pickEntry > pick.current_price ? `<span class="entry-level-badge" title="Enter when price breaks ${fmt$(pickEntry)} — still ${pickUpside}% to ${fmt$(pick.strike)} strike">⚡ &gt; ${fmt$(pickEntry)}</span>` : '<span style="color:var(--text3);font-size:11px">—</span>'}</td>
       <td><span class="sec-chip ${sectorCls}">${shortSector(pick.sector || '')}<span>${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
@@ -535,33 +539,32 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
     }
 
     // Per-strike entry signal:
-    // Combine known resistance levels with auto $5-interval round numbers between
-    // current price and the strike — find the highest one below the strike.
-    // This gives a unique "last gate" for every strike price.
+    // Enter when the stock has moved ~25% of the way from current price to the strike.
+    // This confirms momentum early while leaving 75% of the move left to capture profit.
+    // Snap to the nearest round number and cross-check against known resistance levels.
     const toNum = l => (typeof l === 'object' && l !== null) ? l.price : l;
-    const knownRes = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice && p < opt.strike);
-
-    // Generate $5 round-number levels between current price and strike
-    const roundLevels = [];
+    const knownRes = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice);
     const step = currentPrice >= 500 ? 10 : currentPrice >= 100 ? 5 : 2.5;
-    const roundStart = Math.ceil(currentPrice / step) * step;
-    for (let lvl = roundStart; lvl < opt.strike; lvl += step) {
-      roundLevels.push(parseFloat(lvl.toFixed(2)));
-    }
 
-    // Merge, deduplicate (within $1), sort
-    const allLevels = [...knownRes, ...roundLevels]
-      .filter((v, i, arr) => arr.findIndex(x => Math.abs(x - v) < 1) === i)
-      .sort((a, b) => a - b);
+    // 25% of the way to strike, snapped to nearest round number
+    const rawTarget = currentPrice + (opt.strike - currentPrice) * 0.25;
+    let entryLvl = Math.round(rawTarget / step) * step;
 
-    // Last gate = highest level below the strike
-    const entryLvl = allLevels.length ? allLevels[allLevels.length - 1] : null;
+    // If a known resistance sits within 15% of our computed level, prefer it
+    const nearby = knownRes.find(r => Math.abs(r - entryLvl) / entryLvl < 0.15);
+    if (nearby) entryLvl = nearby;
 
+    // Must be above current price and below strike
+    if (entryLvl <= currentPrice) entryLvl = Math.ceil((currentPrice + step) / step) * step;
+    if (entryLvl >= opt.strike)  entryLvl = opt.strike - step;
+    entryLvl = parseFloat(entryLvl.toFixed(2));
+
+    const upside = (((opt.strike - entryLvl) / entryLvl) * 100).toFixed(0);
     let entryCellHtml;
-    if (!entryLvl) {
+    if (!entryLvl || entryLvl <= currentPrice) {
       entryCellHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
     } else {
-      entryCellHtml = `<span class="entry-level-badge" title="Enter once price closes above ${fmt$(entryLvl)} — last key level before your ${fmt$(opt.strike)} strike">⚡ &gt; ${fmt$(entryLvl)}</span>`;
+      entryCellHtml = `<span class="entry-level-badge" title="Enter when price breaks ${fmt$(entryLvl)} — still ${upside}% to your ${fmt$(opt.strike)} strike from here">⚡ &gt; ${fmt$(entryLvl)}</span>`;
     }
 
     tr.innerHTML = `
