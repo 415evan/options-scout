@@ -1,6 +1,6 @@
 {
   "name": "options-scout",
-  "version": "1.3.10",
+  "version": "1.3.11",
   "description": "Find this week's best call options — ranked by levels, S/R, volume, and live news.",
   "main": "electron/main.js",
   "author": "415evan",
