@@ -644,7 +644,24 @@ async function analyze(ticker) {
   try {
     const res = await fetch(`/api/analyze/${ticker}`);
     const data = await res.json();
-    if (data.error) { showError(data.error); return; }
+    if (data.error) {
+      const isRateLimit = data.error.toLowerCase().includes('rate');
+      if (isRateLimit) {
+        // Auto-retry after 5s instead of showing error screen
+        let secs = 5;
+        showLoading(`Rate limited — retrying in ${secs}s…`);
+        const countdown = setInterval(() => {
+          secs--;
+          if (secs > 0) showLoading(`Rate limited — retrying in ${secs}s…`);
+        }, 1000);
+        await new Promise(r => setTimeout(r, 5000));
+        clearInterval(countdown);
+        $('analyzeBtn').disabled = false;
+        analyze(ticker);
+        return;
+      }
+      showError(data.error); return;
+    }
 
     $('st-ticker').textContent = data.ticker;
     $('st-price').textContent  = fmt$(data.current_price);

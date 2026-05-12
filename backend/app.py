@@ -29,16 +29,16 @@ def _sf(v, default=0.0):
 
 # ─── yfinance retry + per-ticker cache ───────────────────────────────────────
 
-def _yf_call(fn, retries=3, base_delay=2.0):
+def _yf_call(fn, retries=6, base_delay=3.0):
     """Call a yfinance function, retrying on 429 / rate-limit errors."""
     for attempt in range(retries):
         try:
             return fn()
         except Exception as e:
             msg = str(e).lower()
-            if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit')):
+            if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit', 'temporarily')):
                 if attempt < retries - 1:
-                    delay = base_delay * (2 ** attempt)
+                    delay = min(base_delay * (2 ** attempt), 60)  # cap at 60s
                     logger.warning('yf rate limited — retry in %.0fs (attempt %d/%d)', delay, attempt + 1, retries)
                     time.sleep(delay)
                     continue
@@ -48,7 +48,7 @@ def _yf_call(fn, retries=3, base_delay=2.0):
 
 _ticker_cache      = {}
 _ticker_cache_lock = threading.Lock()
-TICKER_CACHE_TTL   = 300  # 5 min — reuse recent results within same scan cycle
+TICKER_CACHE_TTL   = 600  # 10 min — reuse recent results, reduces rate limit hits
 
 
 def _get_cached(ticker):
