@@ -358,15 +358,21 @@ function renderPicksTable(picks) {
     const sectorSign = sectorRet >= 0 ? '+' : '';
     const why = pick.conviction_reason || '';
 
-    // Entry signal for picks table: 25% of the way from current price to strike
+    // Entry signal for picks table: 85% of strike (user's pattern: AKAM 81%, QQQ 94%, MU 77%)
     const pickStep = pick.current_price >= 500 ? 10 : pick.current_price >= 100 ? 5 : 2.5;
-    const pickRaw  = pick.current_price + (pick.strike - pick.current_price) * 0.30;
-    let   pickEntry = Math.round(pickRaw / pickStep) * pickStep;
-    const pickRes   = (pick.resistance_levels || []).filter(l => l > pick.current_price);
-    const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.02);
-    if (pickNearby) pickEntry = pickNearby;
-    if (pickEntry <= pick.current_price) pickEntry = pick.current_price + pickStep;
-    if (pickEntry >= pick.strike) pickEntry = pick.strike - pickStep;
+    const pickRes  = (pick.resistance_levels || []).filter(l => l > pick.current_price);
+    const idealPickEntry = pick.strike * 0.85;
+    let   pickEntry;
+    if (idealPickEntry > pick.current_price + pickStep) {
+      pickEntry = Math.round(idealPickEntry / pickStep) * pickStep;
+      const pickNearby = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.02);
+      if (pickNearby) pickEntry = pickNearby;
+    } else {
+      const fallback = pickRes.length ? pickRes[0] : Math.ceil((pick.current_price + pickStep) / pickStep) * pickStep;
+      pickEntry = Math.round(fallback / pickStep) * pickStep;
+    }
+    if (pickEntry <= pick.current_price) pickEntry = Math.ceil((pick.current_price + pickStep) / pickStep) * pickStep;
+    if (pickEntry >= pick.strike)        pickEntry = parseFloat((pick.strike - pickStep).toFixed(2));
     pickEntry = parseFloat(pickEntry.toFixed(2));
     const pickUpside = (((pick.strike - pickEntry) / pickEntry) * 100).toFixed(0);
 
@@ -545,12 +551,24 @@ function renderOptions(calls, currentPrice, resistanceLevels) {
     const knownRes = (resistanceLevels || []).map(toNum).filter(p => p > currentPrice);
     const step = currentPrice >= 500 ? 10 : currentPrice >= 100 ? 5 : 2.5;
 
-    const rawTarget = currentPrice + (opt.strike - currentPrice) * 0.30;
-    let entryLvl = Math.round(rawTarget / step) * step;
+    // Entry signal based on user's trading pattern:
+    // They enter when stock is ~77-94% of the strike price (avg ~85%).
+    // Use 85% of strike as the entry target — if it's already below current
+    // price (close OTM strikes), fall back to first resistance above current.
+    const idealEntry = opt.strike * 0.85;
+    const firstRes = knownRes.length ? knownRes[0] : Math.ceil((currentPrice + step) / step) * step;
 
-    // Only snap to a known resistance if it's very close (within 2%) to our computed level
-    const nearby = knownRes.find(r => Math.abs(r - entryLvl) / entryLvl < 0.02);
-    if (nearby) entryLvl = nearby;
+    let entryLvl;
+    if (idealEntry > currentPrice + step) {
+      // Far OTM: show the meaningful entry level (85% of strike)
+      entryLvl = Math.round(idealEntry / step) * step;
+      // Prefer a known resistance if one is very close (within 2%)
+      const nearby = knownRes.find(r => Math.abs(r - entryLvl) / entryLvl < 0.02);
+      if (nearby) entryLvl = nearby;
+    } else {
+      // Near OTM: stock already close to strike, enter on first resistance break
+      entryLvl = Math.round(firstRes / step) * step;
+    }
 
     // Must be above current price and strictly below strike
     if (entryLvl <= currentPrice) entryLvl = Math.ceil((currentPrice + step) / step) * step;
