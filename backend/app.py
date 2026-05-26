@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
 import json
+import math
 import platform
 import logging
 import os
@@ -143,9 +144,570 @@ def add_key_levels(df, current_price):
     return out
 
 
+# ─── Technical Indicators ────────────────────────────────────────────────────
+
+def compute_indicators(hist):
+    """Compute MACD, Bollinger Bands, ATR, ADX from OHLCV history.
+
+    Returns a dict with the most recent value of each. Uses pandas/numpy only.
+    """
+    if hist is None or len(hist) < 20:
+        return {}
+
+    close = hist['Close']
+    high  = hist['High']  if 'High'  in hist.columns else close
+    low   = hist['Low']   if 'Low'   in hist.columns else close
+
+    out = {}
+
+    # ── MACD (12, 26, 9) ──────────────────────────────────────────────────────
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line  = ema12 - ema26
+    signal_ln  = macd_line.ewm(span=9, adjust=False).mean()
+    histogram  = macd_line - signal_ln
+    out['macd']        = round(float(macd_line.iloc[-1]),  3)
+    out['macd_signal'] = round(float(signal_ln.iloc[-1]),  3)
+    out['macd_hist']   = round(float(histogram.iloc[-1]),  3)
+    # Bullish if MACD > signal AND histogram increasing
+    prev_hist = float(histogram.iloc[-2]) if len(histogram) >= 2 else 0
+    out['macd_bullish'] = bool(out['macd'] > out['macd_signal'] and out['macd_hist'] > prev_hist)
+
+    # ── Bollinger Bands (20, 2σ) ──────────────────────────────────────────────
+    sma20  = close.rolling(20).mean()
+    std20  = close.rolling(20).std(ddof=0)
+    bb_mid = float(sma20.iloc[-1])
+    bb_up  = float((sma20 + 2 * std20).iloc[-1])
+    bb_lo  = float((sma20 - 2 * std20).iloc[-1])
+    price  = float(close.iloc[-1])
+    # %B: where is price relative to bands  (0 = lower, 1 = upper)
+    pct_b  = (price - bb_lo) / (bb_up - bb_lo) if (bb_up - bb_lo) > 0 else 0.5
+    out.update({
+        'bb_upper': round(bb_up, 2), 'bb_mid': round(bb_mid, 2),
+        'bb_lower': round(bb_lo, 2), 'bb_pct':  round(pct_b, 3),
+    })
+
+    # ── ATR-14 (Average True Range) ───────────────────────────────────────────
+    if len(hist) >= 14 and 'High' in hist.columns:
+        prev_close = close.shift(1)
+        tr = pd.concat([(high - low),
+                        (high - prev_close).abs(),
+                        (low  - prev_close).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean()
+        out['atr']     = round(float(atr.iloc[-1]), 2)
+        out['atr_pct'] = round(float(atr.iloc[-1]) / price * 100, 2) if price > 0 else 0
+
+    # ── ADX-14 (trend strength, 0-100) ────────────────────────────────────────
+    if len(hist) >= 28 and 'High' in hist.columns:
+        up_move   = high.diff()
+        down_move = -low.diff()
+        plus_dm   = ((up_move   > down_move) & (up_move   > 0)).astype(float) * up_move.clip(lower=0)
+        minus_dm  = ((down_move > up_move)   & (down_move > 0)).astype(float) * down_move.clip(lower=0)
+        atr_for_dx = tr.rolling(14).mean()
+        plus_di   = 100 * (plus_dm.rolling(14).mean()  / atr_for_dx).fillna(0)
+        minus_di  = 100 * (minus_dm.rolling(14).mean() / atr_for_dx).fillna(0)
+        dx        = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        adx       = dx.rolling(14).mean()
+        if not adx.empty and not pd.isna(adx.iloc[-1]):
+            out['adx']      = round(float(adx.iloc[-1]), 1)
+            out['plus_di']  = round(float(plus_di.iloc[-1]), 1)
+            out['minus_di'] = round(float(minus_di.iloc[-1]), 1)
+
+    return out
+
+
+# ─── Trend Analysis ──────────────────────────────────────────────────────────
+
+def compute_trend(hist):
+    """
+    Derive a trend score in [-100, +100] and a label from price history.
+    Positive = bullish, negative = bearish, 0 = neutral.
+    Factors: price vs SMA20/SMA50, 5-day & 10-day momentum, RSI-14.
+    """
+    if hist is None or len(hist) < 10:
+        return 0, 'Neutral', {}
+
+    closes = hist['Close'].dropna()
+    if len(closes) < 5:
+        return 0, 'Neutral', {}
+
+    price  = float(closes.iloc[-1])
+    sma20  = float(closes.rolling(min(20, len(closes))).mean().iloc[-1])
+    sma50  = float(closes.rolling(min(50, len(closes))).mean().iloc[-1])
+
+    score = 0
+
+    # ── SMA alignment ─────────────────────────────────────────────────────────
+    if price > sma20: score += 20
+    else:             score -= 20
+    if sma20 > sma50: score += 20    # golden-cross territory
+    else:             score -= 20    # death-cross territory
+    if price > sma50: score += 10
+    else:             score -= 10
+
+    # ── Recent momentum ───────────────────────────────────────────────────────
+    ret5  = (price / float(closes.iloc[max(-6,  -len(closes))]) - 1) * 100
+    ret10 = (price / float(closes.iloc[max(-11, -len(closes))]) - 1) * 100
+
+    if   ret5 >  3: score += 20
+    elif ret5 >  0: score += 10
+    elif ret5 < -3: score -= 20
+    else:           score -= 10
+
+    if   ret10 >  5: score += 15
+    elif ret10 >  0: score +=  8
+    elif ret10 < -5: score -= 15
+    else:            score -=  8
+
+    # ── RSI-14 ────────────────────────────────────────────────────────────────
+    delta = closes.diff().dropna()
+    gain  = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+    loss  = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+    rsi   = 100 - (100 / (1 + gain / loss)) if loss and loss > 0 else 50.0
+
+    if   rsi > 60: score += 15
+    elif rsi > 50: score +=  5
+    elif rsi < 40: score -= 15
+    elif rsi < 50: score -=  5
+
+    # ── MACD / ADX confirmation ──────────────────────────────────────────────
+    indicators = compute_indicators(hist)
+    if indicators:
+        # MACD bullish/bearish cross
+        if indicators.get('macd', 0) > indicators.get('macd_signal', 0):
+            score += 8
+        else:
+            score -= 8
+        # ADX strength weights the signal direction
+        adx = indicators.get('adx', 0)
+        plus_di  = indicators.get('plus_di',  0)
+        minus_di = indicators.get('minus_di', 0)
+        if adx >= 25:
+            if plus_di > minus_di: score += 10
+            else:                  score -= 10
+        # Bollinger Bands — extreme positions
+        bb_pct = indicators.get('bb_pct', 0.5)
+        if   bb_pct > 0.95: score += 5    # near upper band
+        elif bb_pct < 0.05: score -= 5    # near lower band
+
+    score = max(-100, min(100, score))
+
+    if   score >=  50: label = 'Bullish'
+    elif score >=  20: label = 'Slightly Bullish'
+    elif score <= -50: label = 'Bearish'
+    elif score <= -20: label = 'Slightly Bearish'
+    else:              label = 'Neutral'
+
+    meta = {
+        'score': score, 'label': label,
+        'sma20': round(sma20, 2), 'sma50': round(sma50, 2),
+        'rsi': round(rsi, 1),
+        'ret5d': round(ret5, 2), 'ret10d': round(ret10, 2),
+        **indicators,
+    }
+    return score, label, meta
+
+
+def trend_score_modifier(trend_score, option_type):
+    """
+    Return (pts, reason) based on how aligned the option direction is with trend.
+    Goes against trend → big penalty. Aligned → bonus.
+    """
+    if option_type == 'call':
+        if   trend_score >=  50: return +25, 'Aligned with bullish trend'
+        elif trend_score >=  25: return +12, 'Mild bullish tailwind'
+        elif trend_score <= -50: return -45, 'Against strong bearish trend'
+        elif trend_score <= -25: return -22, 'Headwind — stock in downtrend'
+    else:  # put
+        if   trend_score <= -50: return +25, 'Aligned with bearish trend'
+        elif trend_score <= -25: return +12, 'Mild bearish tailwind'
+        elif trend_score >=  50: return -45, 'Against strong bullish trend'
+        elif trend_score >=  25: return -22, 'Headwind — stock in uptrend'
+    return 0, ''
+
+
 # ─── Option Scoring ───────────────────────────────────────────────────────────
 
-def score_call(opt, current_price, supports, resistances, dte):
+# ─── Black-Scholes Greeks (pure Python — no scipy) ───────────────────────────
+
+_RISK_FREE = 0.045   # approx 4.5% short-term rate
+
+def _norm_pdf(x):
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+def _norm_cdf(x):
+    return (1.0 + math.erf(x / math.sqrt(2))) / 2.0
+
+def compute_greeks(S, K, T_days, iv, option_type='call'):
+    """
+    Black-Scholes delta/gamma/theta/vega for a European option.
+    Returns a dict, or None if inputs are degenerate.
+      theta  — per-share per calendar-day (negative = option loses value)
+      vega   — per-share per 1 percentage-point move in IV
+    """
+    if T_days <= 0 or iv <= 0 or S <= 0 or K <= 0:
+        return None
+    T = max(T_days, 0.5) / 365.0   # floor at half a day to avoid div-by-zero
+    r = _RISK_FREE
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * iv**2) * T) / (iv * math.sqrt(T))
+        d2 = d1 - iv * math.sqrt(T)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+    if option_type == 'call':
+        delta = _norm_cdf(d1)
+    else:
+        delta = _norm_cdf(d1) - 1.0   # negative for puts
+
+    gamma = _norm_pdf(d1) / (S * iv * math.sqrt(T))
+
+    # Theta: full annual, then divide by 365 → per calendar day per share
+    theta_yr = -(S * _norm_pdf(d1) * iv / (2.0 * math.sqrt(T)))
+    if option_type == 'call':
+        theta_yr -= r * K * math.exp(-r * T) * _norm_cdf(d2)
+    else:
+        theta_yr += r * K * math.exp(-r * T) * _norm_cdf(-d2)
+    theta = theta_yr / 365.0
+
+    # Vega: per 1 pp move in IV (×0.01 converts from ∂/∂σ to ∂/∂(σ%))
+    vega = S * _norm_pdf(d1) * math.sqrt(T) * 0.01
+
+    return {
+        'delta': round(delta, 3),
+        'gamma': round(gamma, 5),
+        'theta': round(theta, 4),   # $/share/day  (negative)
+        'vega':  round(vega, 4),    # $/share per 1pp IV
+    }
+
+
+def compute_pop(greeks, option_type='call'):
+    """
+    Probability of expiring in-the-money under Black-Scholes:
+      call: N(d2)
+      put:  N(-d2) = 1 - N(d2)
+    We approximate d2 from delta when full inputs aren't handy. Here we already
+    have delta + iv; for accuracy compute from S/K/T/iv directly upstream.
+    """
+    if not greeks: return 0.0
+    delta = greeks.get('delta', 0)
+    if option_type == 'call':
+        # Delta is approximately N(d1); POP is N(d2). For OTM options POP < |delta|.
+        return max(0.0, min(1.0, abs(delta) * 0.92))  # rough approximation
+    else:
+        return max(0.0, min(1.0, abs(delta) * 0.92))
+
+
+def compute_pop_exact(S, K, T_days, iv, option_type='call'):
+    """Exact POP from Black-Scholes d2."""
+    if T_days <= 0 or iv <= 0 or S <= 0 or K <= 0:
+        return 0.0
+    T = max(T_days, 0.5) / 365.0
+    r = _RISK_FREE
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * iv**2) * T) / (iv * math.sqrt(T))
+        d2 = d1 - iv * math.sqrt(T)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+    return _norm_cdf(d2) if option_type == 'call' else _norm_cdf(-d2)
+
+
+def compute_expected_value(S, K, T_days, iv, ask, option_type='call'):
+    """
+    Crude EV: probability-weighted payoff at expiry vs premium paid.
+    Returns expected $ profit per contract (×100 shares).
+    Uses log-normal price distribution under Black-Scholes assumptions.
+    """
+    if T_days <= 0 or iv <= 0 or S <= 0 or K <= 0 or ask <= 0:
+        return None
+    T = max(T_days, 0.5) / 365.0
+    r = _RISK_FREE
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * iv**2) * T) / (iv * math.sqrt(T))
+        d2 = d1 - iv * math.sqrt(T)
+        # E[max(S_T - K, 0)] for call, K - S_T for put (Black-Scholes intrinsic)
+        if option_type == 'call':
+            intrinsic = S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+        else:
+            intrinsic = K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+    except (ValueError, ZeroDivisionError):
+        return None
+    ev_per_share = intrinsic - ask
+    return round(ev_per_share * 100, 2)  # per contract
+
+
+def compute_max_pain(chain_calls, chain_puts):
+    """
+    Max pain price: the strike where total option holder losses are minimized
+    (i.e. where market makers minimize payouts at expiry).
+    Returns (max_pain_strike, total_call_oi, total_put_oi).
+    """
+    if chain_calls is None or chain_puts is None or chain_calls.empty or chain_puts.empty:
+        return None, 0, 0
+
+    call_oi_total = int(chain_calls['openInterest'].fillna(0).sum())
+    put_oi_total  = int(chain_puts['openInterest'].fillna(0).sum())
+
+    # Build clean arrays — drop rows with NaN strikes, coerce OI to safe int
+    c_strikes = chain_calls['strike'].dropna().values
+    c_oi      = chain_calls['openInterest'].fillna(0).values
+    p_strikes = chain_puts['strike'].dropna().values
+    p_oi      = chain_puts['openInterest'].fillna(0).values
+
+    strikes = sorted(set(c_strikes.tolist() + p_strikes.tolist()))
+    if not strikes:
+        return None, call_oi_total, put_oi_total
+
+    # Pre-build clean float arrays for fast iteration
+    c_s = [float(s) for s in c_strikes]
+    c_o = [_sf(o) for o in c_oi]
+    p_s = [float(s) for s in p_strikes]
+    p_o = [_sf(o) for o in p_oi]
+
+    best_strike, best_pain = None, float('inf')
+    for K in strikes:
+        K = float(K)
+        call_pain = sum(max(0.0, K - s) * o for s, o in zip(c_s, c_o))
+        put_pain  = sum(max(0.0, s - K) * o for s, o in zip(p_s, p_o))
+        total = call_pain + put_pain
+        # Guard: NaN totals (from bad data) must not win
+        if total == total and total < best_pain:
+            best_pain, best_strike = total, K
+
+    if best_strike is None:
+        # Fallback: use the median strike
+        best_strike = strikes[len(strikes) // 2]
+
+    return round(float(best_strike), 2), call_oi_total, put_oi_total
+
+
+def compute_pc_ratio(chain_calls, chain_puts):
+    """Put/Call ratio by volume and by open interest."""
+    if chain_calls is None or chain_puts is None:
+        return {'pc_volume': 0.0, 'pc_oi': 0.0}
+    cv = float(chain_calls['volume'].fillna(0).sum())       if not chain_calls.empty else 0
+    pv = float(chain_puts['volume'].fillna(0).sum())        if not chain_puts.empty  else 0
+    co = float(chain_calls['openInterest'].fillna(0).sum()) if not chain_calls.empty else 0
+    po = float(chain_puts['openInterest'].fillna(0).sum())  if not chain_puts.empty  else 0
+    return {
+        'pc_volume': round(pv / cv, 3) if cv > 0 else 0.0,
+        'pc_oi':     round(po / co, 3) if co > 0 else 0.0,
+        'call_volume': int(cv), 'put_volume': int(pv),
+        'call_oi':     int(co), 'put_oi':     int(po),
+    }
+
+
+# ─── Liquidity guardrails ────────────────────────────────────────────────────
+
+MIN_OI         = 50      # minimum open interest to consider tradeable
+MAX_SPREAD_PCT = 0.30    # max bid-ask spread as % of mid
+
+def liquidity_grade(bid, ask, oi):
+    """
+    Returns ('A'|'B'|'C'|'F', score_adjust, reason).
+    Hard filter F = effectively un-tradeable for retail.
+    """
+    if ask <= 0: return 'F', -100, 'No ask price'
+    mid = (bid + ask) / 2
+    spread_pct = (ask - bid) / mid if mid > 0 else 1.0
+
+    if oi < MIN_OI:
+        return 'F', -60, f'OI {oi} — illiquid, hard to exit'
+    if spread_pct > MAX_SPREAD_PCT:
+        return 'F', -55, f'Spread {spread_pct*100:.0f}% — unfillable'
+
+    if oi >= 1000 and spread_pct < 0.05:
+        return 'A', +6, 'Deep liquid, tight spread'
+    if oi >= 500 and spread_pct < 0.10:
+        return 'B', +2, ''
+    if oi >= 100 and spread_pct < 0.20:
+        return 'C', 0, ''
+    return 'C', -8, f'Marginal liquidity'
+
+
+# ─── IV Rank / Percentile — SQLite-backed ────────────────────────────────────
+
+import sqlite3
+
+_DB_PATH = os.path.expanduser('~/.optionsscout/optionsscout.db')
+os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
+_db_lock = threading.Lock()
+
+def _db():
+    conn = sqlite3.connect(_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _init_db():
+    """Create tables if they don't exist."""
+    with _db_lock, _db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS iv_history (
+            ticker TEXT, date TEXT, iv REAL,
+            PRIMARY KEY (ticker, date))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            option_type TEXT NOT NULL,        -- 'call' | 'put'
+            strike REAL NOT NULL,
+            expiry TEXT NOT NULL,
+            entry_date TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            exit_date TEXT, exit_price REAL,
+            contracts INTEGER NOT NULL,
+            thesis TEXT,
+            tags TEXT,                        -- comma-separated
+            score_at_entry INTEGER,
+            paper INTEGER DEFAULT 0,          -- 1 = paper trade
+            closed INTEGER DEFAULT 0
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            option_type TEXT NOT NULL,
+            strike REAL NOT NULL,
+            expiry TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            contracts INTEGER NOT NULL,
+            opened_at TEXT NOT NULL
+        )""")
+        c.commit()
+
+_init_db()
+
+
+def record_iv_today(ticker, atm_iv):
+    """Persist today's ATM IV for later IV rank/percentile calc."""
+    if atm_iv is None or atm_iv <= 0: return
+    today = datetime.now().strftime('%Y-%m-%d')
+    try:
+        with _db_lock, _db() as c:
+            c.execute("INSERT OR REPLACE INTO iv_history(ticker, date, iv) VALUES (?,?,?)",
+                      (ticker, today, float(atm_iv)))
+            c.commit()
+    except Exception as e:
+        logger.warning('record_iv_today %s: %s', ticker, e)
+
+
+def compute_iv_rank(ticker, current_iv):
+    """
+    IV Rank (0-100): where current IV sits between the 52-week min and max.
+    IV Percentile: % of days in last 252 where IV was BELOW current.
+    """
+    if current_iv is None or current_iv <= 0:
+        return None
+    try:
+        with _db_lock, _db() as c:
+            rows = c.execute("""SELECT iv FROM iv_history WHERE ticker=?
+                                ORDER BY date DESC LIMIT 252""", (ticker,)).fetchall()
+    except Exception:
+        return None
+
+    ivs = [float(r['iv']) for r in rows if r['iv']]
+    if len(ivs) < 5:
+        return {'rank': None, 'percentile': None, 'days': len(ivs),
+                'min': None, 'max': None, 'note': 'Building history…'}
+
+    iv_min = min(ivs); iv_max = max(ivs)
+    rank = (current_iv - iv_min) / (iv_max - iv_min) * 100 if iv_max > iv_min else 50
+    pct  = sum(1 for v in ivs if v < current_iv) / len(ivs) * 100
+    return {
+        'rank':       round(max(0, min(100, rank)), 1),
+        'percentile': round(pct, 1),
+        'days':       len(ivs),
+        'min':        round(iv_min * 100, 1),
+        'max':        round(iv_max * 100, 1),
+        'current':    round(current_iv * 100, 1),
+    }
+
+
+# ─── Earnings & Dividend Awareness ───────────────────────────────────────────
+
+def detect_earnings_in_window(stock, target_date):
+    """
+    Returns earnings date if it falls before target_date, else None.
+    Returns string YYYY-MM-DD or None.
+    """
+    try:
+        cal = _yf_call(lambda: stock.calendar)
+        if cal is None: return None
+        # yfinance .calendar can be a DataFrame or dict depending on version
+        if hasattr(cal, 'to_dict'):
+            cal = cal.to_dict()
+        # Try common keys
+        for key in ('Earnings Date', 'earningsDate', 'Earnings Average'):
+            v = cal.get(key) if isinstance(cal, dict) else None
+            if v is None: continue
+            if isinstance(v, list) and v:
+                v = v[0]
+            try:
+                if hasattr(v, 'strftime'):
+                    edate = v.strftime('%Y-%m-%d')
+                else:
+                    edate = str(v)[:10]
+                # Compare to target_date (string YYYY-MM-DD)
+                if edate >= datetime.now().strftime('%Y-%m-%d') and edate <= target_date:
+                    return edate
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug('earnings detect %s: %s', getattr(stock, 'ticker', '?'), e)
+    return None
+
+
+def _greek_score(greeks, ask, option_type='call'):
+    """
+    Extra score adjustments derived purely from greeks.
+    Returns (score_delta, reasons_list).
+    """
+    if not greeks:
+        return 0, []
+
+    score, reasons = 0, []
+    delta = greeks['delta']
+    theta = greeks['theta']
+    vega  = greeks['vega']
+    abs_delta = abs(delta)
+
+    # ── Delta: probability-of-profit proxy ───────────────────────────────────
+    if   0.30 <= abs_delta <= 0.50:
+        score += 20; reasons.append(f'Δ {delta:+.2f} (sweet spot)')
+    elif 0.20 <= abs_delta <  0.30:
+        score += 12; reasons.append(f'Δ {delta:+.2f}')
+    elif 0.15 <= abs_delta <  0.20:
+        score +=  5; reasons.append(f'Δ {delta:+.2f} (aggressive)')
+    elif 0.50 <  abs_delta <= 0.65:
+        score += 10; reasons.append(f'Δ {delta:+.2f} (high prob)')
+    elif abs_delta < 0.10:
+        score -= 30; reasons.append(f'Δ {delta:+.2f} — near-zero probability')
+    elif abs_delta < 0.15:
+        score -= 12; reasons.append(f'Δ {delta:+.2f} — very low probability')
+
+    # ── Theta decay: daily bleed as % of premium ──────────────────────────────
+    if ask > 0:
+        theta_ratio = abs(theta) / ask   # fraction of premium lost per day
+        if   theta_ratio < 0.020:
+            score += 12; reasons.append(f'Θ {theta_ratio*100:.1f}%/day (slow decay)')
+        elif theta_ratio < 0.050:
+            score +=  5; reasons.append(f'Θ {theta_ratio*100:.1f}%/day')
+        elif theta_ratio < 0.100:
+            score -= 10; reasons.append(f'Θ {theta_ratio*100:.1f}%/day (fast decay)')
+        elif theta_ratio < 0.200:
+            score -= 25; reasons.append(f'Θ {theta_ratio*100:.1f}%/day — severe decay')
+        else:
+            score -= 45; reasons.append(f'Θ {theta_ratio*100:.0f}%/day — expires worthless')
+
+    # ── Vega / IV crush risk ──────────────────────────────────────────────────
+    if ask > 0:
+        vega_ratio = vega / ask
+        if   vega_ratio > 0.40:
+            score -= 20; reasons.append(f'High IV crush risk (V/ask {vega_ratio:.2f})')
+        elif vega_ratio > 0.20:
+            score -= 10; reasons.append(f'Elevated IV crush risk')
+
+    return score, reasons
+
+
+def score_call(opt, current_price, supports, resistances, dte, greeks=None):
     strike = _sf(opt.get('strike'))
     bid    = _sf(opt.get('bid'))
     ask    = _sf(opt.get('ask'))
@@ -159,15 +721,17 @@ def score_call(opt, current_price, supports, resistances, dte):
     score, reasons = 0, []
 
     # ── Moneyness ────────────────────────────────────────────────────────────
+    # Favor realistic targets: 2-6% OTM is the sweet spot; high OTM only makes
+    # sense with more time — penalised below via DTE×OTM interaction.
     otm_pct = (strike - current_price) / current_price * 100
-    if  10 < otm_pct <= 20:    score += 32; reasons.append(f'{otm_pct:.1f}% OTM — breakout play')
-    elif 20 < otm_pct <= 40:   score += 28; reasons.append(f'{otm_pct:.1f}% OTM — lottery')
-    elif  5 < otm_pct <= 10:   score += 22; reasons.append(f'{otm_pct:.1f}% OTM')
-    elif  2 < otm_pct <=  5:   score += 16; reasons.append(f'{otm_pct:.1f}% OTM')
-    elif -1 <= otm_pct <= 2:   score += 12; reasons.append('ATM strike')
-    elif -5 <= otm_pct < -1:   score +=  8; reasons.append(f'ITM {abs(otm_pct):.1f}%')
-    elif otm_pct > 40:         score += 20; reasons.append(f'{otm_pct:.1f}% OTM — deep lottery')
-    else:                       score +=  3
+    if   2 < otm_pct <=  5:   score += 30; reasons.append(f'{otm_pct:.1f}% OTM — realistic target')
+    elif  5 < otm_pct <= 10:  score += 22; reasons.append(f'{otm_pct:.1f}% OTM')
+    elif -1 <= otm_pct <= 2:  score += 18; reasons.append('ATM strike')
+    elif 10 < otm_pct <= 20:  score += 14; reasons.append(f'{otm_pct:.1f}% OTM — breakout play')
+    elif -5 <= otm_pct < -1:  score +=  8; reasons.append(f'ITM {abs(otm_pct):.1f}%')
+    elif 20 < otm_pct <= 40:  score +=  8; reasons.append(f'{otm_pct:.1f}% OTM — lottery')
+    elif otm_pct > 40:        score +=  4; reasons.append(f'{otm_pct:.1f}% OTM — deep lottery')
+    else:                      score +=  3
 
     # ── DTE ──────────────────────────────────────────────────────────────────
     if   2 <= dte <= 5:   score += 18; reasons.append(f'{dte}d expiry (weekly)')
@@ -177,9 +741,21 @@ def score_call(opt, current_price, supports, resistances, dte):
     elif 21 < dte <= 45:  score += 18; reasons.append(f'{dte}d expiry (swing)')
     elif 45 < dte <= 60:  score += 14; reasons.append(f'{dte}d expiry (swing)')
 
-    # ── Cheap premium bonus (more contracts, lottery upside) ─────────────────
-    if   ask <= 0.20: score += 30; reasons.append(f'Ultra cheap ${ask:.2f} — stack contracts')
-    elif ask <= 0.50: score += 24; reasons.append(f'Cheap premium ${ask:.2f}')
+    # ── DTE × OTM interaction penalty ────────────────────────────────────────
+    # Short-dated options need to be close to the money to have real probability.
+    # Realistic max OTM scales with sqrt(DTE): ~3% at 1d, ~6% at 4d, ~9% at 9d.
+    if otm_pct > 0 and dte > 0:
+        max_reasonable = 3.0 * (dte ** 0.5)          # e.g. 1d→3%, 4d→6%, 9d→9%
+        if otm_pct > max_reasonable * 2.5:
+            pen = min(70, int((otm_pct - max_reasonable * 2.5) * 4) + 30)
+            score -= pen; reasons.append(f'Way too far OTM for {dte}d (-{pen}pts)')
+        elif otm_pct > max_reasonable * 1.6:
+            pen = min(40, int((otm_pct - max_reasonable * 1.6) * 3) + 10)
+            score -= pen; reasons.append(f'Too far OTM for {dte}d (-{pen}pts)')
+
+    # ── Premium ───────────────────────────────────────────────────────────────
+    # Cheap premium is good, but don't bonus sub-$0.20 lottery tickets heavily
+    if   ask <= 0.50: score += 16; reasons.append(f'Cheap premium ${ask:.2f}')
     elif ask <= 1.50: score += 16; reasons.append(f'Low premium ${ask:.2f}')
     elif ask <= 3.00: score +=  8; reasons.append(f'Affordable ${ask:.2f}')
 
@@ -225,7 +801,343 @@ def score_call(opt, current_price, supports, resistances, dte):
     if oi > 0 and (vol / oi) > 0.2:
         score += 8; reasons.append('High V/OI ratio')
 
+    # ── Greeks ────────────────────────────────────────────────────────────────
+    g_score, g_reasons = _greek_score(greeks, ask, 'call')
+    score += g_score; reasons.extend(g_reasons)
+
     return max(score, 0), reasons
+
+
+def score_put(opt, current_price, supports, resistances, dte, greeks=None):
+    """Score a put option — mirror of score_call but for bearish plays."""
+    strike = _sf(opt.get('strike'))
+    bid    = _sf(opt.get('bid'))
+    ask    = _sf(opt.get('ask'))
+    vol    = int(_sf(opt.get('volume')))
+    oi     = int(_sf(opt.get('openInterest')))
+    iv     = _sf(opt.get('impliedVolatility'))
+
+    if strike <= 0 or ask <= 0:
+        return None
+
+    score, reasons = 0, []
+
+    # ── Moneyness (OTM = strike below current price) ──────────────────────────
+    otm_pct = (current_price - strike) / current_price * 100
+    if   2 < otm_pct <=  5:   score += 30; reasons.append(f'{otm_pct:.1f}% OTM — realistic target')
+    elif  5 < otm_pct <= 10:  score += 22; reasons.append(f'{otm_pct:.1f}% OTM')
+    elif -1 <= otm_pct <= 2:  score += 18; reasons.append('ATM strike')
+    elif 10 < otm_pct <= 20:  score += 14; reasons.append(f'{otm_pct:.1f}% OTM — breakdown play')
+    elif -5 <= otm_pct < -1:  score +=  8; reasons.append(f'ITM {abs(otm_pct):.1f}%')
+    elif 20 < otm_pct <= 40:  score +=  8; reasons.append(f'{otm_pct:.1f}% OTM — deep put')
+    elif otm_pct > 40:        score +=  4; reasons.append(f'{otm_pct:.1f}% OTM — deep lottery')
+    else:                      score +=  3
+
+    # ── DTE ──────────────────────────────────────────────────────────────────
+    if   2 <= dte <= 5:   score += 18; reasons.append(f'{dte}d expiry (weekly)')
+    elif dte == 1:        score += 8;  reasons.append('1d expiry (high gamma)')
+    elif  5 < dte <= 10:  score += 16; reasons.append(f'{dte}d expiry')
+    elif 10 < dte <= 21:  score += 14; reasons.append(f'{dte}d expiry')
+    elif 21 < dte <= 45:  score += 18; reasons.append(f'{dte}d expiry (swing)')
+    elif 45 < dte <= 60:  score += 14; reasons.append(f'{dte}d expiry (swing)')
+
+    # ── DTE × OTM interaction penalty ────────────────────────────────────────
+    if otm_pct > 0 and dte > 0:
+        max_reasonable = 3.0 * (dte ** 0.5)
+        if otm_pct > max_reasonable * 2.5:
+            pen = min(70, int((otm_pct - max_reasonable * 2.5) * 4) + 30)
+            score -= pen; reasons.append(f'Way too far OTM for {dte}d (-{pen}pts)')
+        elif otm_pct > max_reasonable * 1.6:
+            pen = min(40, int((otm_pct - max_reasonable * 1.6) * 3) + 10)
+            score -= pen; reasons.append(f'Too far OTM for {dte}d (-{pen}pts)')
+
+    # ── Premium ───────────────────────────────────────────────────────────────
+    if   ask <= 0.50: score += 16; reasons.append(f'Cheap premium ${ask:.2f}')
+    elif ask <= 1.50: score += 16; reasons.append(f'Low premium ${ask:.2f}')
+    elif ask <= 3.00: score +=  8; reasons.append(f'Affordable ${ask:.2f}')
+
+    # ── Volume ────────────────────────────────────────────────────────────────
+    if   vol >= 2000: score += 25; reasons.append(f'Vol {vol:,} (very active)')
+    elif vol >= 500:  score += 18; reasons.append(f'Vol {vol:,}')
+    elif vol >= 100:  score += 10; reasons.append(f'Vol {vol:,}')
+    elif vol > 0:     score +=  3
+
+    # ── Open interest ─────────────────────────────────────────────────────────
+    if   oi >= 10000: score += 18; reasons.append(f'OI {oi:,} (deep liquid)')
+    elif oi >= 2000:  score += 12; reasons.append(f'OI {oi:,}')
+    elif oi >= 500:   score +=  6; reasons.append(f'OI {oi:,}')
+
+    # ── Bearish setup: near resistance is good for puts ───────────────────────
+    for lvl in resistances:
+        prox = abs(current_price - lvl['price']) / current_price
+        if prox < 0.025:
+            score += 12 * min(lvl['strength'], 3)
+            reasons.append(f"Near resistance ${lvl['price']} — bearish setup"); break
+        elif prox < 0.05:
+            score += 6
+            reasons.append(f"Near resistance ${lvl['price']}"); break
+
+    # Strike near support = natural target for the move
+    for lvl in supports:
+        if abs(strike - lvl['price']) / strike < 0.025:
+            score += 10
+            reasons.append(f"Strike at support ${lvl['price']}"); break
+
+    # ── Spread quality ────────────────────────────────────────────────────────
+    mid = (bid + ask) / 2
+    sp  = (ask - bid) / mid if mid > 0 else 1
+    if sp < 0.08:   score += 10; reasons.append('Tight spread')
+    elif sp < 0.15: score +=  5
+    elif sp > 0.40: score -=  8; reasons.append('Wide spread')
+
+    # ── IV ────────────────────────────────────────────────────────────────────
+    if   iv > 2.0:            score -= 15; reasons.append('Very high IV')
+    elif iv > 1.2:            score -=  5; reasons.append('Elevated IV')
+    elif 0.2 <= iv <= 0.7:    score +=  8; reasons.append('Reasonable IV')
+
+    # ── V/OI momentum ─────────────────────────────────────────────────────────
+    if oi > 0 and (vol / oi) > 0.2:
+        score += 8; reasons.append('High V/OI ratio')
+
+    # ── Greeks ────────────────────────────────────────────────────────────────
+    g_score, g_reasons = _greek_score(greeks, ask, 'put')
+    score += g_score; reasons.extend(g_reasons)
+
+    return max(score, 0), reasons
+
+
+# ─── Vertical Spread Scoring & Generation ────────────────────────────────────
+
+def _score_spread(spread_type, current_price, breakeven, net_cost, max_profit, max_loss,
+                  rr_ratio, dte, iv, long_oi, short_oi, t_score, near_earn=None, pop=None):
+    """Score a vertical spread. Returns (score, reasons)."""
+    score, reasons = 0, []
+
+    be_pct = abs(breakeven - current_price) / current_price * 100
+
+    # ── DTE × Breakeven interaction (must pass first) ─────────────────────────
+    # Same formula as single-leg: realistic move ≈ 3√DTE %
+    if dte > 0:
+        max_reasonable_pct = 3.0 * (dte ** 0.5)
+        if be_pct > max_reasonable_pct * 2.5:
+            pen = min(75, int((be_pct - max_reasonable_pct * 2.5) * 5) + 35)
+            score -= pen; reasons.append(f'Breakeven {be_pct:.0f}% from stock — unreachable in {dte}d (-{pen}pts)')
+        elif be_pct > max_reasonable_pct * 1.6:
+            pen = min(40, int((be_pct - max_reasonable_pct * 1.6) * 3) + 12)
+            score -= pen; reasons.append(f'Breakeven too far for {dte}d (-{pen}pts)')
+
+    # ── R/R — capped bonus when POP is very low ───────────────────────────────
+    pop_frac = pop if pop is not None else 0.5
+    rr_cap = 3.0 if pop_frac < 0.25 else 5.0   # discount extreme R/R at low probability
+    effective_rr = min(rr_ratio, rr_cap) if net_cost > 0 else rr_ratio
+    if   effective_rr >= 2.5: score += 35; reasons.append(f'R/R {rr_ratio:.1f}:1')
+    elif effective_rr >= 1.5: score += 22; reasons.append(f'R/R {rr_ratio:.1f}:1')
+    elif effective_rr >= 1.0: score += 10; reasons.append(f'R/R {rr_ratio:.1f}:1')
+    else:                     score -= 15; reasons.append(f'Poor R/R {rr_ratio:.1f}:1')
+
+    # ── POP ───────────────────────────────────────────────────────────────────
+    if pop is not None:
+        p = pop_frac * 100
+        if   p >= 60: score += 25; reasons.append(f'POP {p:.0f}% — high probability')
+        elif p >= 45: score += 15; reasons.append(f'POP {p:.0f}%')
+        elif p >= 30: score +=  5; reasons.append(f'POP {p:.0f}%')
+        elif p >= 20: score -=  8
+        else:         score -= 25; reasons.append(f'POP {p:.0f}% — long shot')
+
+    # ── Breakeven distance ────────────────────────────────────────────────────
+    if   be_pct <= 1.0: score += 25; reasons.append(f'Breakeven only {be_pct:.1f}% away')
+    elif be_pct <= 3.0: score += 16; reasons.append(f'Breakeven {be_pct:.1f}% away')
+    elif be_pct <= 6.0: score +=  8; reasons.append(f'Breakeven {be_pct:.1f}% away')
+    elif be_pct <= 10.0: score +=  2
+
+    # ── DTE (21-45d is optimal for spreads) ───────────────────────────────────
+    if   21 <= dte <= 45: score += 22; reasons.append(f'{dte}d — ideal spread timing')
+    elif 14 <= dte <  21: score += 15; reasons.append(f'{dte}d expiry')
+    elif 45 < dte <= 60:  score += 14
+    elif  7 <= dte <  14: score +=  8; reasons.append(f'{dte}d — short-dated')
+    elif dte <  7:        score -= 15; reasons.append(f'Only {dte}d — gamma risk')
+
+    # ── Net cost / credit ─────────────────────────────────────────────────────
+    if net_cost > 0:   # debit
+        if   net_cost <= 0.75: score += 15; reasons.append(f'Cheap debit ${net_cost:.2f}')
+        elif net_cost <= 1.50: score +=  8; reasons.append(f'Low debit ${net_cost:.2f}')
+        elif net_cost <= 3.00: score +=  3
+        elif net_cost >  5.00: score -= 10
+    else:              # credit received
+        cr = abs(net_cost)
+        if   cr >= 1.00: score += 15; reasons.append(f'Strong credit ${cr:.2f}/share')
+        elif cr >= 0.50: score += 8;  reasons.append(f'Credit ${cr:.2f}/share')
+
+    # ── Liquidity (both legs) ─────────────────────────────────────────────────
+    min_oi = min(long_oi, short_oi)
+    if   min_oi >= 1000: score += 18; reasons.append('Both legs deep liquid')
+    elif min_oi >=  500: score += 12; reasons.append('Both legs liquid')
+    elif min_oi >=  100: score +=  5
+    elif min_oi <    50: score -= 25; reasons.append('Thin leg — hard to exit')
+
+    # ── Trend alignment ───────────────────────────────────────────────────────
+    is_bull = spread_type in ('bull_call', 'bull_put')
+    t_pts, t_reason = trend_score_modifier(t_score, 'call' if is_bull else 'put')
+    score += t_pts
+    if t_reason: reasons.append(t_reason)
+
+    # ── IV environment ────────────────────────────────────────────────────────
+    if   0.15 <= iv <= 0.50: score +=  8; reasons.append('Healthy IV for spreads')
+    elif iv > 0.80:           score -=  5; reasons.append('High IV — wide natural spreads')
+
+    # ── Earnings ──────────────────────────────────────────────────────────────
+    if near_earn:
+        score -= 12; reasons.append(f'Earnings {near_earn} before expiry')
+
+    return max(0, score), reasons
+
+
+def generate_vertical_spreads(calls_df, puts_df, current_price, dte, ds, t_score,
+                               ticker, near_earn=None):
+    """
+    Generate all four vertical spread types (Bull Call, Bear Put, Bull Put, Bear Call)
+    from the raw option chain DataFrames for a single expiry date.
+    Returns a list of scored dicts, sorted best-first, capped at 30.
+    """
+    if not current_price or current_price <= 0:
+        return []
+
+    spreads = []
+    max_width = current_price * 0.15   # cap spread width at 15% of stock price
+    min_width = max(0.50, current_price * 0.005)
+
+    def _clean(df, lo_pct, hi_pct):
+        """Return sorted list of clean dicts filtered to a strike range."""
+        if df is None or df.empty:
+            return []
+        lo, hi = current_price * lo_pct, current_price * hi_pct
+        out = []
+        for _, row in df.iterrows():
+            opt = row.to_dict()
+            strike = _sf(opt.get('strike'))
+            if strike < lo or strike > hi:
+                continue
+            bid  = _sf(opt.get('bid'))
+            ask  = _sf(opt.get('ask'))
+            last = _sf(opt.get('lastPrice'))
+            oi   = int(_sf(opt.get('openInterest')))
+            iv   = _sf(opt.get('impliedVolatility'))
+            if bid <= 0 and ask <= 0 and last > 0:
+                bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
+            if ask <= 0:
+                continue
+            out.append({'strike': strike, 'bid': bid, 'ask': ask, 'oi': oi, 'iv': iv})
+        return sorted(out, key=lambda x: x['strike'])
+
+    def _mk(stype, direct, long_s, short_s, net_cost, mp, ml, be, rr, iv_avg, l_oi, s_oi, pop, sc, reas, l, s):
+        return {
+            'spread_type': stype, 'direction': direct,
+            'long_strike': long_s, 'short_strike': short_s,
+            'expiry': ds, 'dte': dte,
+            'net_cost': net_cost,
+            'max_profit_per_contract': round(mp * 100, 0),
+            'max_loss_per_contract':   round(ml * 100, 0),
+            'breakeven': be, 'rr_ratio': rr,
+            'width': round(abs(short_s - long_s), 2),
+            'pop': round(max(0.0, min(1.0, pop)) * 100, 1),
+            'score': sc, 'reasons': reas,
+            'long_bid': l['bid'], 'long_ask': l['ask'],
+            'short_bid': s['bid'], 'short_ask': s['ask'],
+            'long_oi': l_oi, 'short_oi': s_oi,
+            'iv': round((iv_avg or 0) * 100, 1),
+            'near_earnings': near_earn,
+        }
+
+    calls = _clean(calls_df, 0.85, 1.30)
+    puts  = _clean(puts_df,  0.70, 1.10)
+
+    # ── Bull Call Spread (debit, bullish) ─────────────────────────────────────
+    for i, lg in enumerate(calls):
+        if lg['strike'] > current_price * 1.08: continue
+        if lg['oi'] < MIN_OI: continue
+        for sh in calls[i+1:]:
+            w = sh['strike'] - lg['strike']
+            if w > max_width: break
+            if w < min_width: continue
+            if sh['oi'] < MIN_OI: continue
+            nd = round(lg['ask'] - sh['bid'], 2)
+            if nd < 0.05: continue
+            mp = round(w - nd, 2)
+            if mp <= 0: continue
+            rr = round(mp / nd, 2)
+            be = round(lg['strike'] + nd, 2)
+            iv = (lg['iv'] + sh['iv']) / 2 if lg['iv'] and sh['iv'] else (lg['iv'] or 0.3)
+            pop = compute_pop_exact(current_price, be, dte, iv, 'call')
+            sc, reas = _score_spread('bull_call', current_price, be, nd, mp, nd, rr, dte, iv, lg['oi'], sh['oi'], t_score, near_earn, pop)
+            spreads.append(_mk('Bull Call', 'bullish', lg['strike'], sh['strike'], nd, mp, nd, be, rr, iv, lg['oi'], sh['oi'], pop, sc, reas, lg, sh))
+
+    # ── Bear Put Spread (debit, bearish) ──────────────────────────────────────
+    puts_rev = list(reversed(puts))
+    for i, lg in enumerate(puts_rev):
+        if lg['strike'] < current_price * 0.92: continue
+        if lg['oi'] < MIN_OI: continue
+        for sh in puts_rev[i+1:]:
+            w = lg['strike'] - sh['strike']
+            if w > max_width: break
+            if w < min_width: continue
+            if sh['oi'] < MIN_OI: continue
+            nd = round(lg['ask'] - sh['bid'], 2)
+            if nd < 0.05: continue
+            mp = round(w - nd, 2)
+            if mp <= 0: continue
+            rr = round(mp / nd, 2)
+            be = round(lg['strike'] - nd, 2)
+            iv = (lg['iv'] + sh['iv']) / 2 if lg['iv'] and sh['iv'] else (lg['iv'] or 0.3)
+            pop = compute_pop_exact(current_price, be, dte, iv, 'put')
+            sc, reas = _score_spread('bear_put', current_price, be, nd, mp, nd, rr, dte, iv, lg['oi'], sh['oi'], t_score, near_earn, pop)
+            spreads.append(_mk('Bear Put', 'bearish', lg['strike'], sh['strike'], nd, mp, nd, be, rr, iv, lg['oi'], sh['oi'], pop, sc, reas, lg, sh))
+
+    # ── Bull Put Spread (credit, bullish) ─────────────────────────────────────
+    for i, sh in enumerate(puts_rev):          # sh = higher strike (sell)
+        if sh['strike'] > current_price * 1.05: continue
+        if sh['strike'] < current_price * 0.88: continue
+        if sh['oi'] < MIN_OI or sh['bid'] <= 0: continue
+        for lg in puts_rev[i+1:]:              # lg = lower strike (buy)
+            w = sh['strike'] - lg['strike']
+            if w > max_width: break
+            if w < min_width: continue
+            if lg['oi'] < MIN_OI: continue
+            nc = round(sh['bid'] - lg['ask'], 2)
+            if nc < 0.05: continue
+            ml = round(w - nc, 2)
+            if ml <= 0: continue
+            rr = round(nc / ml, 2)
+            be = round(sh['strike'] - nc, 2)
+            iv = (sh['iv'] + lg['iv']) / 2 if sh['iv'] and lg['iv'] else (sh['iv'] or 0.3)
+            pop = 1.0 - compute_pop_exact(current_price, be, dte, iv, 'put')
+            sc, reas = _score_spread('bull_put', current_price, be, -nc, nc, ml, rr, dte, iv, sh['oi'], lg['oi'], t_score, near_earn, pop)
+            reas = [f'Credit ${nc:.2f}/sh (${round(nc*100):.0f}/contract)'] + reas
+            spreads.append(_mk('Bull Put', 'bullish', lg['strike'], sh['strike'], -nc, nc, ml, be, rr, iv, lg['oi'], sh['oi'], pop, sc, reas, lg, sh))
+
+    # ── Bear Call Spread (credit, bearish) ────────────────────────────────────
+    for i, sh in enumerate(calls):             # sh = lower strike (sell)
+        if sh['strike'] < current_price * 0.95: continue
+        if sh['strike'] > current_price * 1.08: continue
+        if sh['oi'] < MIN_OI or sh['bid'] <= 0: continue
+        for lg in calls[i+1:]:                 # lg = higher strike (buy)
+            w = lg['strike'] - sh['strike']
+            if w > max_width: break
+            if w < min_width: continue
+            if lg['oi'] < MIN_OI: continue
+            nc = round(sh['bid'] - lg['ask'], 2)
+            if nc < 0.05: continue
+            ml = round(w - nc, 2)
+            if ml <= 0: continue
+            rr = round(nc / ml, 2)
+            be = round(sh['strike'] + nc, 2)
+            iv = (sh['iv'] + lg['iv']) / 2 if sh['iv'] and lg['iv'] else (sh['iv'] or 0.3)
+            pop = 1.0 - compute_pop_exact(current_price, be, dte, iv, 'call')
+            sc, reas = _score_spread('bear_call', current_price, be, -nc, nc, ml, rr, dte, iv, sh['oi'], lg['oi'], t_score, near_earn, pop)
+            reas = [f'Credit ${nc:.2f}/sh (${round(nc*100):.0f}/contract)'] + reas
+            spreads.append(_mk('Bear Call', 'bearish', sh['strike'], lg['strike'], -nc, nc, ml, be, rr, iv, sh['oi'], lg['oi'], pop, sc, reas, sh, lg))
+
+    spreads.sort(key=lambda x: x['score'], reverse=True)
+    return spreads[:30]
 
 
 # ─── Core analyze function (reused for single + batch) ────────────────────────
@@ -270,43 +1182,190 @@ def analyze_ticker(ticker):
     except Exception:
         exp_dates = []
 
+    # ── Trend analysis (uses full 3-month history) ────────────────────────────
+    t_score, t_label, t_meta = compute_trend(hist)
+
     today = datetime.now()
-    best_calls = []
+    best_calls   = []
+    best_puts    = []
+    best_spreads = []
+    atm_ivs   = []                 # collect for IV rank (avg of near-ATM nearest expiry)
+    full_call_chains = []          # for max pain and P/C
+    full_put_chains  = []
+
+    def _make_opt_row(opt, ds, dte, bid, ask, greeks, pop, ev, liq_grade, eng, near_earn):
+        strike_v = _sf(opt.get('strike'))
+        return {
+            'strike': strike_v, 'expiry': ds, 'dte': dte,
+            'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid+ask)/2, 2),
+            'volume': int(_sf(opt.get('volume'))),
+            'open_interest': int(_sf(opt.get('openInterest'))),
+            'iv': round(_sf(opt.get('impliedVolatility')) * 100, 1),
+            'itm': bool(opt.get('inTheMoney', False)),
+            'greeks': greeks or {},
+            'pop':            round(pop * 100, 1) if pop else 0,    # percentage
+            'expected_value': ev,                                    # dollars per contract
+            'liquidity':      liq_grade,                             # 'A'|'B'|'C'|'F'
+            'plain':          eng,                                   # plain-english explanation
+            'near_earnings':  near_earn,                             # earnings date if in expiry window
+        }
+
     for ds in exp_dates[:10]:
         exp = datetime.strptime(ds, '%Y-%m-%d')
         dte = (exp - today).days
         if dte < 0 or dte > 60: continue
+
+        # Earnings warning if any earnings between today and expiry
+        near_earn = detect_earnings_in_window(stock, ds)
+
         try:
-            chain = _yf_call(lambda d=ds: stock.option_chain(d).calls)
-            if chain is None or chain.empty: continue
-            chain = chain[(chain['strike'] >= current_price * 0.90) & (chain['strike'] <= current_price * 1.60)]
-            for _, row in chain.iterrows():
-                opt  = row.to_dict()
-                bid  = _sf(opt.get('bid'))
-                ask  = _sf(opt.get('ask'))
-                last = _sf(opt.get('lastPrice'))
-                # Stale/closed market: bid & ask are 0/NaN, use lastPrice as proxy
-                if bid <= 0 and ask <= 0 and last > 0:
-                    bid = round(last * 0.95, 2)
-                    ask = round(last * 1.05, 2)
-                    opt['bid'] = bid
-                    opt['ask'] = ask
-                res = score_call(opt, current_price, supports, resistances, dte)
-                if not res: continue
-                sc, reasons = res
-                best_calls.append({
-                    'strike': _sf(opt.get('strike')), 'expiry': ds, 'dte': dte,
-                    'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid+ask)/2, 2),
-                    'volume': int(_sf(opt.get('volume'))),
-                    'open_interest': int(_sf(opt.get('openInterest'))),
-                    'iv': round(_sf(opt.get('impliedVolatility')) * 100, 1),
-                    'score': sc, 'reasons': reasons,
-                    'itm': bool(opt.get('inTheMoney', False)),
-                })
+            full_chain = _yf_call(lambda d=ds: stock.option_chain(d))
+            if full_chain is None: continue
+
+            # ── Track full chains for aggregate metrics ────────────────────────
+            if full_chain.calls is not None and not full_chain.calls.empty:
+                full_call_chains.append(full_chain.calls)
+            if full_chain.puts is not None and not full_chain.puts.empty:
+                full_put_chains.append(full_chain.puts)
+
+            # ── Capture ATM IV (nearest strike) for IV rank ────────────────────
+            try:
+                near_atm = full_chain.calls.iloc[(full_chain.calls['strike'] - current_price).abs().argsort()[:1]]
+                if not near_atm.empty:
+                    iv_atm = _sf(near_atm.iloc[0].get('impliedVolatility'))
+                    if iv_atm > 0: atm_ivs.append(iv_atm)
+            except Exception: pass
+
+            # ── Calls ──────────────────────────────────────────────────────────
+            calls_df = full_chain.calls
+            if calls_df is not None and not calls_df.empty:
+                calls_df = calls_df[(calls_df['strike'] >= current_price * 0.90) &
+                                    (calls_df['strike'] <= current_price * 1.60)]
+                for _, row in calls_df.iterrows():
+                    opt  = row.to_dict()
+                    bid  = _sf(opt.get('bid'))
+                    ask  = _sf(opt.get('ask'))
+                    last = _sf(opt.get('lastPrice'))
+                    iv   = _sf(opt.get('impliedVolatility'))
+                    oi   = int(_sf(opt.get('openInterest')))
+                    strike_v = _sf(opt.get('strike'))
+                    if bid <= 0 and ask <= 0 and last > 0:
+                        bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
+                        opt['bid'] = bid; opt['ask'] = ask
+
+                    # Liquidity gate
+                    liq_grade, liq_adj, liq_reason = liquidity_grade(bid, ask, oi)
+                    if liq_grade == 'F':
+                        continue   # hard filter — un-tradeable
+
+                    greeks = compute_greeks(current_price, strike_v, dte, iv, 'call')
+                    res = score_call(opt, current_price, supports, resistances, dte, greeks)
+                    if not res: continue
+                    sc, reasons = res
+                    sc += liq_adj
+                    if liq_reason: reasons = list(reasons) + [liq_reason]
+                    t_pts, t_reason = trend_score_modifier(t_score, 'call')
+                    if t_pts != 0:
+                        sc = max(0, sc + t_pts)
+                        if t_reason: reasons = list(reasons) + [t_reason]
+                    # Earnings penalty if expiry straddles earnings
+                    if near_earn:
+                        sc = max(0, sc - 12)
+                        reasons = list(reasons) + [f'Earnings {near_earn} before expiry — IV crush risk']
+
+                    pop = compute_pop_exact(current_price, strike_v, dte, iv, 'call')
+                    ev  = compute_expected_value(current_price, strike_v, dte, iv, ask, 'call')
+
+                    # Plain-english explanation
+                    move_pct = (strike_v - current_price) / current_price * 100
+                    breakeven = strike_v + ask
+                    be_pct = (breakeven - current_price) / current_price * 100
+                    plain = (f"If {ticker} rises {be_pct:.1f}% to ${breakeven:.2f} by {ds}, "
+                             f"you break even. Stock above ${breakeven:.2f} = profit. "
+                             f"Stock at or below ${strike_v:.2f} at expiry = lose 100% (-${ask*100:.0f}/contract).")
+
+                    best_calls.append({**_make_opt_row(opt, ds, dte, bid, ask, greeks, pop, ev, liq_grade, plain, near_earn),
+                                       'score': max(0, sc), 'reasons': reasons})
+
+            # ── Puts ───────────────────────────────────────────────────────────
+            puts_df = full_chain.puts
+            if puts_df is not None and not puts_df.empty:
+                puts_df = puts_df[(puts_df['strike'] >= current_price * 0.40) &
+                                   (puts_df['strike'] <= current_price * 1.10)]
+                for _, row in puts_df.iterrows():
+                    opt  = row.to_dict()
+                    bid  = _sf(opt.get('bid'))
+                    ask  = _sf(opt.get('ask'))
+                    last = _sf(opt.get('lastPrice'))
+                    iv   = _sf(opt.get('impliedVolatility'))
+                    oi   = int(_sf(opt.get('openInterest')))
+                    strike_v = _sf(opt.get('strike'))
+                    if bid <= 0 and ask <= 0 and last > 0:
+                        bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
+                        opt['bid'] = bid; opt['ask'] = ask
+
+                    liq_grade, liq_adj, liq_reason = liquidity_grade(bid, ask, oi)
+                    if liq_grade == 'F':
+                        continue
+
+                    greeks = compute_greeks(current_price, strike_v, dte, iv, 'put')
+                    res = score_put(opt, current_price, supports, resistances, dte, greeks)
+                    if not res: continue
+                    sc, reasons = res
+                    sc += liq_adj
+                    if liq_reason: reasons = list(reasons) + [liq_reason]
+                    t_pts, t_reason = trend_score_modifier(t_score, 'put')
+                    if t_pts != 0:
+                        sc = max(0, sc + t_pts)
+                        if t_reason: reasons = list(reasons) + [t_reason]
+                    if near_earn:
+                        sc = max(0, sc - 12)
+                        reasons = list(reasons) + [f'Earnings {near_earn} before expiry — IV crush risk']
+
+                    pop = compute_pop_exact(current_price, strike_v, dte, iv, 'put')
+                    ev  = compute_expected_value(current_price, strike_v, dte, iv, ask, 'put')
+
+                    move_pct = (current_price - strike_v) / current_price * 100
+                    breakeven = strike_v - ask
+                    be_pct = (current_price - breakeven) / current_price * 100
+                    plain = (f"If {ticker} falls {be_pct:.1f}% to ${breakeven:.2f} by {ds}, "
+                             f"you break even. Stock below ${breakeven:.2f} = profit. "
+                             f"Stock at or above ${strike_v:.2f} at expiry = lose 100% (-${ask*100:.0f}/contract).")
+
+                    best_puts.append({**_make_opt_row(opt, ds, dte, bid, ask, greeks, pop, ev, liq_grade, plain, near_earn),
+                                      'score': max(0, sc), 'reasons': reasons})
+
+            # ── Vertical Spreads ──────────────────────────────────────────────
+            try:
+                exp_spreads = generate_vertical_spreads(
+                    full_chain.calls, full_chain.puts,
+                    current_price, dte, ds, t_score, ticker, near_earn
+                )
+                best_spreads.extend(exp_spreads)
+            except Exception as se:
+                logger.warning('spread gen %s %s: %s', ticker, ds, se)
+
         except Exception as e:
             logger.warning('chain err %s %s: %s', ticker, ds, e); continue
 
     best_calls.sort(key=lambda x: x['score'], reverse=True)
+    best_puts.sort(key=lambda x: x['score'], reverse=True)
+    best_spreads.sort(key=lambda x: x['score'], reverse=True)
+
+    # ── Aggregate options metrics ──────────────────────────────────────────────
+    iv_rank_info = None
+    if atm_ivs:
+        avg_atm_iv = sum(atm_ivs) / len(atm_ivs)
+        record_iv_today(ticker, avg_atm_iv)
+        iv_rank_info = compute_iv_rank(ticker, avg_atm_iv)
+
+    max_pain_strike, call_oi_total, put_oi_total = (None, 0, 0)
+    pc_ratio_data = {}
+    if full_call_chains and full_put_chains:
+        combined_calls = pd.concat(full_call_chains, ignore_index=True)
+        combined_puts  = pd.concat(full_put_chains,  ignore_index=True)
+        max_pain_strike, call_oi_total, put_oi_total = compute_max_pain(combined_calls, combined_puts)
+        pc_ratio_data = compute_pc_ratio(combined_calls, combined_puts)
 
     avg_vol = float(hist['Volume'].mean()) if not hist.empty else 0
     today_v = int(hist['Volume'].iloc[-1])  if not hist.empty else 0
@@ -315,13 +1374,37 @@ def analyze_ticker(ticker):
     vhist   = [{'date': dt.strftime('%m/%d'), 'volume': int(r['Volume']), 'above_avg': r['Volume'] > avg_vol}
                for dt, r in hist.tail(20).iterrows()]
 
+    # Price history for chart (last 60 trading days)
+    price_history = []
+    try:
+        for dt, r in hist.tail(60).iterrows():
+            price_history.append({
+                'date':  dt.strftime('%Y-%m-%d'),
+                'open':  round(float(r['Open']),  2),
+                'high':  round(float(r['High']),  2),
+                'low':   round(float(r['Low']),   2),
+                'close': round(float(r['Close']), 2),
+            })
+    except Exception: pass
+
     result = {
         'ticker': ticker,
         'company_name':   info.get('longName', ticker),
         'current_price':  round(current_price, 2),
         'support_levels': supports,
         'resistance_levels': resistances,
-        'top_calls': best_calls[:20],
+        'top_calls':   best_calls[:25],
+        'top_puts':    best_puts[:25],
+        'top_spreads': best_spreads[:25],
+        'trend': t_meta,
+        'iv_rank': iv_rank_info,
+        'options_flow': {
+            'max_pain':   max_pain_strike,
+            'call_oi':    call_oi_total,
+            'put_oi':     put_oi_total,
+            **pc_ratio_data,
+        },
+        'price_history': price_history,
         'volume': {'today': today_v, 'avg': int(avg_vol), 'ratio': ratio, 'signal': sig, 'history': vhist},
         'stats': {
             '52w_high':  info.get('fiftyTwoWeekHigh'),
@@ -474,7 +1557,7 @@ def build_scan_list(sector_perf):
     return result
 
 
-def compute_confidence(score, vol_signal, reasons, sector_ret=0.0):
+def compute_confidence(score, vol_signal, reasons, sector_ret=0.0, trend_score=0, option_type='call'):
     base = min(score / 1.15, 78.0)
     if vol_signal == 'High':    base += 12
     elif vol_signal == 'Normal': base += 3
@@ -482,7 +1565,18 @@ def compute_confidence(score, vol_signal, reasons, sector_ret=0.0):
     # Hot sector bonus
     if sector_ret >= 3:   base += 8
     elif sector_ret >= 1: base += 4
-    return min(round(base), 95)
+    # Trend alignment
+    if option_type == 'call':
+        if   trend_score >=  50: base += 10
+        elif trend_score >=  20: base +=  5
+        elif trend_score <= -50: base -= 18
+        elif trend_score <= -20: base -=  9
+    else:  # put
+        if   trend_score <= -50: base += 10
+        elif trend_score <= -20: base +=  5
+        elif trend_score >=  50: base -= 18
+        elif trend_score >=  20: base -=  9
+    return min(max(round(base), 0), 95)
 
 
 def conviction_label(conf):
@@ -519,7 +1613,7 @@ def conviction_reason(top, sector, sector_ret, vol_signal):
 _DTE_BUCKETS = [(0, 7), (8, 14), (15, 30), (31, 60)]
 
 def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
-                      vol_sig, best_calls, supports, resistances):
+                      vol_sig, best_calls, supports, resistances, trend_score=0):
     """Return one pick dict per DTE bucket (Weekly/2-Week/Monthly/Swing)."""
     res_prices = [l['price'] for l in resistances[:3]]
     sup_prices = [l['price'] for l in supports[:3]]
@@ -530,7 +1624,8 @@ def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
         if not bucket:
             continue
         top  = bucket[0]
-        conf = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret)
+        conf = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret,
+                                  trend_score=trend_score, option_type='call')
         picks.append({
             'ticker':            ticker,
             'company_name':      company_name,
@@ -575,8 +1670,9 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                         supports    = sorted([l for l in sr_raw if l['type'] == 'support'    and l['price'] < current_price * 1.03], key=lambda x: x['price'], reverse=True)[:4]
                         resistances = sorted([l for l in sr_raw if l['type'] == 'resistance' and l['price'] > current_price * 0.97], key=lambda x: x['price'])[:4]
                         exp_dates   = _yf_call(lambda: list(stock.options)) or []
-                        today       = datetime.now()
-                        best_calls  = []
+                        today        = datetime.now()
+                        best_calls   = []
+                        fast_t_score, _, _ = compute_trend(hist)
                         for ds in exp_dates:
                             exp = datetime.strptime(ds, '%Y-%m-%d')
                             dte = (exp - today).days
@@ -589,12 +1685,18 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                                     opt  = row.to_dict()
                                     bid  = _sf(opt.get('bid'));  ask = _sf(opt.get('ask'))
                                     last = _sf(opt.get('lastPrice'))
+                                    iv   = _sf(opt.get('impliedVolatility'))
                                     if bid <= 0 and ask <= 0 and last > 0:
                                         bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
                                         opt['bid'] = bid; opt['ask'] = ask
-                                    res = score_call(opt, current_price, supports, resistances, dte)
+                                    greeks_f = compute_greeks(current_price, _sf(opt.get('strike')), dte, iv, 'call')
+                                    res = score_call(opt, current_price, supports, resistances, dte, greeks_f)
                                     if not res: continue
                                     sc, reasons = res
+                                    t_pts, t_reason = trend_score_modifier(fast_t_score, 'call')
+                                    if t_pts != 0:
+                                        sc = max(0, sc + t_pts)
+                                        if t_reason: reasons = list(reasons) + [t_reason]
                                     best_calls.append({
                                         'strike': _sf(opt.get('strike')), 'expiry': ds, 'dte': dte,
                                         'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid + ask) / 2, 2),
@@ -612,7 +1714,8 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                             ratio   = round(today_v / avg_vol, 2) if avg_vol > 0 else 1.0
                             vol_sig = 'High' if ratio > 1.4 else ('Low' if ratio < 0.6 else 'Normal')
                             return _picks_from_calls(ticker, ticker, current_price, sector, sector_ret,
-                                                     vol_sig, best_calls, supports, resistances)
+                                                     vol_sig, best_calls, supports, resistances,
+                                                     trend_score=fast_t_score)
                 except Exception as e:
                     logger.warning('fast scan %s: %s — falling back', ticker, e)
 
@@ -621,10 +1724,12 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
         if r.get('error') or not r.get('top_calls'):
             return []
         vol_sig = r['volume']['signal']
+        slow_t_score = r.get('trend', {}).get('score', 0)
         return _picks_from_calls(
             ticker, r['company_name'], r['current_price'], sector, sector_ret,
             vol_sig, r['top_calls'],
             r.get('support_levels', []), r.get('resistance_levels', []),
+            trend_score=slow_t_score,
         )
     except Exception as e:
         logger.warning('picks scan %s: %s', ticker, e)
@@ -906,6 +2011,212 @@ def get_price(ticker):
 @app.route('/api/health')
 def health():
     return jsonify({'ok': True})
+
+
+# ─── Trade Journal & Position Tracking ────────────────────────────────────────
+
+@app.route('/api/journal/trades', methods=['GET'])
+def list_trades():
+    """List all trades from journal (open + closed)."""
+    paper = request.args.get('paper')
+    try:
+        with _db_lock, _db() as c:
+            sql = "SELECT * FROM trades"
+            args = []
+            if paper is not None:
+                sql += " WHERE paper = ?"
+                args.append(1 if paper.lower() in ('1', 'true', 'yes') else 0)
+            sql += " ORDER BY entry_date DESC, id DESC"
+            rows = c.execute(sql, args).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d.get('closed') and d.get('exit_price') is not None:
+                pnl = (d['exit_price'] - d['entry_price']) * d['contracts'] * 100
+                d['pnl'] = round(pnl, 2)
+                d['pnl_pct'] = round((d['exit_price'] - d['entry_price']) / d['entry_price'] * 100, 1) if d['entry_price'] else 0
+            else:
+                d['pnl'] = None; d['pnl_pct'] = None
+            out.append(d)
+        return jsonify({'trades': out})
+    except Exception as e:
+        logger.exception('list_trades'); return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/journal/trades', methods=['POST'])
+def add_trade():
+    """Log a new trade (open or pre-closed). JSON body matches the trades schema."""
+    try:
+        b = request.get_json(force=True) or {}
+        with _db_lock, _db() as c:
+            cur = c.execute("""INSERT INTO trades
+                (ticker, option_type, strike, expiry, entry_date, entry_price,
+                 exit_date, exit_price, contracts, thesis, tags, score_at_entry, paper, closed)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (b.get('ticker', '').upper(), b.get('option_type', 'call'), float(b.get('strike', 0)),
+                 b.get('expiry', ''), b.get('entry_date', datetime.now().strftime('%Y-%m-%d')),
+                 float(b.get('entry_price', 0)), b.get('exit_date'),
+                 float(b['exit_price']) if b.get('exit_price') is not None else None,
+                 int(b.get('contracts', 1)), b.get('thesis', ''), b.get('tags', ''),
+                 int(b.get('score_at_entry', 0)),
+                 1 if b.get('paper') else 0,
+                 1 if (b.get('exit_price') is not None or b.get('closed')) else 0))
+            c.commit()
+            new_id = cur.lastrowid
+        return jsonify({'id': new_id, 'ok': True})
+    except Exception as e:
+        logger.exception('add_trade'); return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/journal/trades/<int:trade_id>', methods=['PUT'])
+def close_trade(trade_id):
+    """Close an open trade with an exit price."""
+    try:
+        b = request.get_json(force=True) or {}
+        exit_price = float(b.get('exit_price', 0))
+        exit_date  = b.get('exit_date', datetime.now().strftime('%Y-%m-%d'))
+        with _db_lock, _db() as c:
+            c.execute("""UPDATE trades SET exit_price=?, exit_date=?, closed=1 WHERE id=?""",
+                      (exit_price, exit_date, trade_id))
+            c.commit()
+        return jsonify({'ok': True})
+    except Exception as e:
+        logger.exception('close_trade'); return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/journal/trades/<int:trade_id>', methods=['DELETE'])
+def delete_trade(trade_id):
+    try:
+        with _db_lock, _db() as c:
+            c.execute("DELETE FROM trades WHERE id=?", (trade_id,))
+            c.commit()
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/journal/stats')
+def journal_stats():
+    """Aggregate stats: win rate, avg P&L, by option type, by score band."""
+    try:
+        with _db_lock, _db() as c:
+            rows = c.execute("SELECT * FROM trades WHERE closed=1").fetchall()
+        if not rows:
+            return jsonify({'total': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
+                            'avg_pnl': 0, 'total_pnl': 0, 'by_type': {}, 'by_score': {}})
+        total_pnl = 0; wins = 0; losses = 0
+        by_type   = {'call': {'n': 0, 'wins': 0, 'pnl': 0}, 'put':  {'n': 0, 'wins': 0, 'pnl': 0}}
+        by_score  = {'high': {'n': 0, 'wins': 0, 'pnl': 0},  # score >= 130
+                     'mid':  {'n': 0, 'wins': 0, 'pnl': 0},  # 80-129
+                     'low':  {'n': 0, 'wins': 0, 'pnl': 0}}  # < 80
+        for r in rows:
+            pnl = (r['exit_price'] - r['entry_price']) * r['contracts'] * 100
+            total_pnl += pnl
+            ot = r['option_type']
+            sc = r['score_at_entry'] or 0
+            sb = 'high' if sc >= 130 else 'mid' if sc >= 80 else 'low'
+            if ot in by_type:
+                by_type[ot]['n']   += 1; by_type[ot]['pnl'] += pnl
+                if pnl > 0: by_type[ot]['wins'] += 1
+            by_score[sb]['n']   += 1; by_score[sb]['pnl'] += pnl
+            if pnl > 0:
+                wins += 1; by_score[sb]['wins'] += 1
+            elif pnl < 0:
+                losses += 1
+        n = len(rows)
+        return jsonify({
+            'total': n, 'wins': wins, 'losses': losses,
+            'win_rate':  round(wins / n * 100, 1),
+            'avg_pnl':   round(total_pnl / n, 2),
+            'total_pnl': round(total_pnl, 2),
+            'by_type':   {k: {**v, 'pnl': round(v['pnl'], 2),
+                              'win_rate': round(v['wins'] / v['n'] * 100, 1) if v['n'] else 0}
+                          for k, v in by_type.items()},
+            'by_score':  {k: {**v, 'pnl': round(v['pnl'], 2),
+                              'win_rate': round(v['wins'] / v['n'] * 100, 1) if v['n'] else 0}
+                          for k, v in by_score.items()},
+        })
+    except Exception as e:
+        logger.exception('journal_stats'); return jsonify({'error': str(e)}), 500
+
+
+# ─── Multi-leg Strategy Builder ───────────────────────────────────────────────
+
+@app.route('/api/strategy/build', methods=['POST'])
+def strategy_build():
+    """
+    Build a multi-leg strategy and return combined Greeks, max P/L, breakevens.
+    Body: { strategy: 'vertical_call_debit'|'vertical_put_debit'|'iron_condor'|
+                      'straddle'|'strangle'|'butterfly_call'|...,
+            ticker: 'AAPL', expiry: 'YYYY-MM-DD', current_price: 150.0,
+            legs: [{type:'call'|'put', strike, qty:+1|-1, premium}, ...] }
+    Returns combined metrics.
+    """
+    try:
+        b = request.get_json(force=True) or {}
+        legs = b.get('legs', [])
+        if not legs:
+            return jsonify({'error': 'no legs'}), 400
+        S = float(b.get('current_price', 0))
+        T_days = int(b.get('dte', 30))
+        iv_est = float(b.get('iv', 0.30))
+
+        # Net cost (debit positive = pays, credit negative = receives)
+        net_cost = 0
+        net_delta = net_gamma = net_theta = net_vega = 0
+        for leg in legs:
+            qty = int(leg.get('qty', 1))  # +1 long, -1 short
+            premium = float(leg.get('premium', 0))
+            net_cost += qty * premium * 100
+            g = compute_greeks(S, float(leg.get('strike', 0)), T_days, iv_est, leg.get('type', 'call'))
+            if g:
+                net_delta += qty * g['delta']
+                net_gamma += qty * g['gamma']
+                net_theta += qty * g['theta']
+                net_vega  += qty * g['vega']
+
+        # Payoff at expiry across a price range
+        strikes = sorted(set(float(l.get('strike', 0)) for l in legs))
+        if not strikes:
+            return jsonify({'error': 'no strikes'}), 400
+        s_min = min(strikes) * 0.70; s_max = max(strikes) * 1.30
+        prices, payoffs = [], []
+        for i in range(101):
+            s = s_min + (s_max - s_min) * i / 100
+            pay = 0
+            for leg in legs:
+                qty = int(leg.get('qty', 1))
+                K = float(leg.get('strike', 0))
+                prem = float(leg.get('premium', 0))
+                intrinsic = max(0, s - K) if leg.get('type') == 'call' else max(0, K - s)
+                pay += qty * (intrinsic - prem) * 100
+            prices.append(round(s, 2)); payoffs.append(round(pay, 2))
+
+        max_profit = max(payoffs); max_loss = min(payoffs)
+        # Find breakevens by sign changes
+        breakevens = []
+        for i in range(1, len(payoffs)):
+            if payoffs[i-1] * payoffs[i] < 0:  # sign change
+                # Linear interp
+                p1, p2 = payoffs[i-1], payoffs[i]
+                s1, s2 = prices[i-1], prices[i]
+                breakevens.append(round(s1 + (s2 - s1) * (0 - p1) / (p2 - p1), 2))
+
+        return jsonify({
+            'net_cost':    round(net_cost, 2),
+            'max_profit':  round(max_profit, 2),
+            'max_loss':    round(max_loss, 2),
+            'breakevens':  breakevens,
+            'net_greeks': {
+                'delta': round(net_delta, 3),
+                'gamma': round(net_gamma, 4),
+                'theta': round(net_theta, 4),
+                'vega':  round(net_vega,  4),
+            },
+            'payoff_curve': {'prices': prices, 'payoffs': payoffs},
+        })
+    except Exception as e:
+        logger.exception('strategy_build'); return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

@@ -41,6 +41,12 @@
   </div>
 </header>
 
+<!-- Legal disclaimer banner -->
+<div id="disclaimerBar" class="disclaimer-bar">
+  <span>⚠️ <strong>Educational tool only.</strong> Not investment advice. Options can lose 100% of premium. You are solely responsible for your trades.</span>
+  <button onclick="dismissDisclaimer()" class="disclaimer-dismiss" title="Hide">✕</button>
+</div>
+
 <!-- Morning check modal -->
 <div id="morningModal" class="modal-backdrop hidden">
   <div class="modal">
@@ -331,6 +337,7 @@
     <div class="sstat"><span class="sstat-label">52W LOW</span><span class="sstat-val red" id="st-52l">—</span></div>
     <div class="sstat"><span class="sstat-label">AVG VOL</span><span class="sstat-val" id="st-avgvol">—</span></div>
     <div class="sstat"><span class="sstat-label">MARKET CAP</span><span class="sstat-val" id="st-mktcap">—</span></div>
+    <div class="sstat"><span class="sstat-label">TREND</span><span class="sstat-val" id="st-trend"><span class="trend-badge trend-neutral">Neutral</span></span></div>
   </div>
 
   <div class="layout">
@@ -355,6 +362,69 @@
       </div>
 
       <div class="card">
+        <div class="card-head">
+          <span>IV Rank
+            <span class="info-tip" title="Where current implied volatility sits between its 52-week min and max. High IV Rank (>50) = options are expensive (favor selling premium). Low IV Rank (<30) = cheap options (favor buying).">ⓘ</span>
+          </span>
+          <span id="ivRankBadge" class="ivrank-badge">—</span>
+        </div>
+        <div class="card-body">
+          <div class="ivrank-row">
+            <div class="ivrank-cell">
+              <span class="ivrank-label">Current</span>
+              <span class="ivrank-val" id="ivCurrent">—</span>
+            </div>
+            <div class="ivrank-cell">
+              <span class="ivrank-label">52w Min</span>
+              <span class="ivrank-val" id="ivMin">—</span>
+            </div>
+            <div class="ivrank-cell">
+              <span class="ivrank-label">52w Max</span>
+              <span class="ivrank-val" id="ivMax">—</span>
+            </div>
+          </div>
+          <div class="ivrank-bar-wrap">
+            <div class="ivrank-bar-track"><div id="ivRankBar" class="ivrank-bar"></div></div>
+            <div class="ivrank-marks"><span>0</span><span>50</span><span>100</span></div>
+          </div>
+          <div class="ivrank-pct">
+            Percentile: <strong id="ivPercentile">—</strong>
+            <span style="color:var(--text3)">· <span id="ivDays">—</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>Options Flow
+            <span class="info-tip" title="Max Pain = the strike where total option holders lose the most at expiry. Stocks often gravitate toward this price. P/C Ratio = puts vs calls volume; >1 means bearish positioning, <0.7 means bullish.">ⓘ</span>
+          </span>
+        </div>
+        <div class="card-body flow-body">
+          <div class="flow-row">
+            <span class="flow-label">Max Pain</span>
+            <span class="flow-val" id="maxPainVal">—</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-label">P/C Ratio (Vol)</span>
+            <span class="flow-val" id="pcVolVal">—</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-label">P/C Ratio (OI)</span>
+            <span class="flow-val" id="pcOiVal">—</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-label">Total Call OI</span>
+            <span class="flow-val" id="callOiVal">—</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-label">Total Put OI</span>
+            <span class="flow-val" id="putOiVal">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-head">Volume Analysis</div>
         <div class="card-body">
           <div class="vol-stats">
@@ -369,47 +439,261 @@
           <div id="volSparkline" class="vol-sparkline"></div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>Price Chart
+            <span class="info-tip" title="Last 60 trading days with SMA-20 (yellow), SMA-50 (orange), and your support/resistance levels overlaid.">ⓘ</span>
+          </span>
+        </div>
+        <div class="card-body chart-card-body">
+          <svg id="priceChart" class="price-chart" viewBox="0 0 320 180" preserveAspectRatio="none"></svg>
+          <div class="chart-legend">
+            <span><span class="chart-dot dot-price"></span>Price</span>
+            <span><span class="chart-dot dot-sma20"></span>SMA-20</span>
+            <span><span class="chart-dot dot-sma50"></span>SMA-50</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>Indicators
+            <span class="info-tip" title="MACD: trend strength (12,26,9). Bollinger Bands %B: 0 = lower band, 1 = upper. ATR: average daily range in dollars. ADX: trend strength (0-100, >25 = strong trend).">ⓘ</span>
+          </span>
+        </div>
+        <div class="card-body flow-body">
+          <div class="flow-row"><span class="flow-label">MACD</span><span class="flow-val" id="ind-macd">—</span></div>
+          <div class="flow-row"><span class="flow-label">BB %B</span><span class="flow-val" id="ind-bb">—</span></div>
+          <div class="flow-row"><span class="flow-label">ATR (14)</span><span class="flow-val" id="ind-atr">—</span></div>
+          <div class="flow-row"><span class="flow-label">ADX (14)</span><span class="flow-val" id="ind-adx">—</span></div>
+          <div class="flow-row"><span class="flow-label">RSI (14)</span><span class="flow-val" id="ind-rsi">—</span></div>
+        </div>
+      </div>
     </aside>
 
     <section class="panel-right">
-      <div class="card full-height">
+      <div class="card">
         <div class="card-head">
-          Top Call Options — This Week
-          <span id="optCount" class="count-badge">0 found</span>
+          <span id="optionsCardTitle">Options</span>
         </div>
         <div class="card-body no-pad">
-          <!-- Entry signal banner -->
-          <div id="entrySignal" class="entry-signal hidden">
-            <div class="entry-signal-inner">
-              <span class="entry-lightning">⚡</span>
-              <div class="entry-body">
-                <div id="entrySignalTitle" class="entry-title">Enter above $—</div>
-                <div id="entrySignalSub" class="entry-sub">Wait for price to break &amp; hold above this level before entering the call</div>
-              </div>
-              <button id="entryWatchBtn" class="watch-btn" onclick="toggleTickerWatch()">🔕 Watch</button>
-            </div>
-          </div>
 
+          <!-- Risk warning banner -->
+          <div id="riskBanner" class="risk-banner hidden"></div>
+
+          <!-- Position sizing prompt -->
           <div id="positionBanner" class="position-banner hidden">
             <span>💡 Set your portfolio to see how many contracts to buy and your P&amp;L</span>
             <button class="btn-secondary" onclick="openPortfolioModal()">Set Portfolio →</button>
           </div>
-          <div class="table-scroll">
-            <table class="opts-table">
-              <thead><tr>
-                <th>#</th><th>STRIKE</th><th>ENTRY SIGNAL</th><th>EXPIRY</th><th>DTE</th><th>BID</th><th>ASK</th>
-                <th>MID</th><th>VOLUME</th><th>OI</th><th>IV %</th><th>SCORE</th>
-                <th class="sizing-col">BUY</th>
-                <th class="sizing-col">COST</th>
-                <th class="sizing-col">MAX LOSS</th>
-                <th class="sizing-col">BREAKEVEN</th>
-                <th class="sizing-col">2× AT</th>
-                <th>SIGNALS</th>
-              </tr></thead>
-              <tbody id="optsBody"></tbody>
-            </table>
+
+          <!-- Shared filter bar (applies to calls + puts) -->
+          <div class="opts-filters shared-filter-bar">
+            <label class="opt-filter">
+              <span>Min OI</span>
+              <input type="number" id="filterOI" value="50" min="0" step="50" onchange="reRenderOpts()" />
+            </label>
+            <label class="opt-filter">
+              <span>Max Spread %</span>
+              <input type="number" id="filterSpread" value="30" min="0" max="100" step="5" onchange="reRenderOpts()" />
+            </label>
+            <label class="opt-filter">
+              <span>Min |Δ|</span>
+              <input type="number" id="filterDelta" value="0" min="0" max="1" step="0.05" onchange="reRenderOpts()" />
+            </label>
+            <label class="opt-filter">
+              <span>Min POP%</span>
+              <input type="number" id="filterPop" value="0" min="0" max="100" step="5" onchange="reRenderOpts()" />
+            </label>
+            <label class="opt-filter">
+              <span>Liquidity ≥</span>
+              <select id="filterLiq" onchange="reRenderOpts()">
+                <option value="C">C</option>
+                <option value="B">B</option>
+                <option value="A">A</option>
+              </select>
+            </label>
+            <label class="opt-filter opt-filter-toggle">
+              <span>Moneyness</span>
+              <select id="filterMoneyness" onchange="reRenderOpts()" title="Filter by in-the-money status">
+                <option value="all">All</option>
+                <option value="otm">OTM only</option>
+                <option value="itm">ITM only</option>
+              </select>
+            </label>
+            <button class="btn-secondary" onclick="resetFilters()" style="margin-left:auto;font-size:11px">Reset</button>
           </div>
-          <div id="noOptions" class="no-options hidden">No tradeable call options found this week.</div>
+
+          <!-- ── CALLS section ──────────────────────────────────── -->
+          <div class="opts-section" id="callsSection">
+            <div class="opts-section-head calls-section-head" onclick="toggleSection('callsContent')">
+              <span>📈 Calls</span>
+              <span id="callsCount" class="count-badge">—</span>
+              <span class="section-chevron">▼</span>
+            </div>
+            <div id="callsContent">
+              <div id="entrySignal" class="entry-signal hidden">
+                <div class="entry-signal-inner">
+                  <span class="entry-lightning">⚡</span>
+                  <div class="entry-body">
+                    <div id="entrySignalTitle" class="entry-title">Enter above $—</div>
+                    <div id="entrySignalSub" class="entry-sub">Wait for price to break &amp; hold above this level before entering the call</div>
+                  </div>
+                  <button id="entryWatchBtn" class="watch-btn" onclick="toggleTickerWatch()">🔕 Watch</button>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table class="opts-table">
+                  <thead><tr>
+                    <th>#</th>
+                    <th class="sortable" data-sort="strike">STRIKE</th>
+                    <th>ENTRY SIGNAL</th>
+                    <th>EXPIRY</th>
+                    <th class="sortable" data-sort="dte">DTE</th>
+                    <th class="sortable" data-sort="bid">BID</th>
+                    <th class="sortable" data-sort="ask">ASK</th>
+                    <th class="sortable" data-sort="mid">MID</th>
+                    <th class="sortable" data-sort="volume">VOLUME</th>
+                    <th class="sortable" data-sort="open_interest">OI</th>
+                    <th class="sortable" data-sort="iv">IV %</th>
+                    <th class="greek-col sortable" data-sort="delta" title="Delta — probability proxy (0.30–0.50 is ideal)">Δ DELTA</th>
+                    <th class="greek-col sortable" data-sort="theta" title="Theta — daily dollar decay per share">Θ/DAY</th>
+                    <th class="greek-col sortable" data-sort="vega" title="Vega — per 1pp IV move per share">V VEGA</th>
+                    <th class="sortable" data-sort="pop" title="Probability option finishes in-the-money at expiry">POP %</th>
+                    <th class="sortable" data-sort="expected_value" title="Black-Scholes expected value of contract (consensus-priced)">EV $</th>
+                    <th title="A/B/C grade based on open interest and bid-ask spread">LIQ</th>
+                    <th class="sortable" data-sort="score">SCORE</th>
+                    <th class="sizing-col">BUY</th>
+                    <th class="sizing-col">COST</th>
+                    <th class="sizing-col">MAX LOSS</th>
+                    <th class="sizing-col">BREAKEVEN</th>
+                    <th class="sizing-col">2× AT</th>
+                    <th>SIGNALS</th>
+                  </tr></thead>
+                  <tbody id="optsBodyCalls"></tbody>
+                </table>
+              </div>
+              <div id="noOptions" class="no-options hidden">No tradeable call options found.</div>
+            </div>
+          </div>
+
+          <!-- ── PUTS section ───────────────────────────────────── -->
+          <div class="opts-section" id="putsSection">
+            <div class="opts-section-head puts-section-head" onclick="toggleSection('putsContent')">
+              <span>📉 Puts</span>
+              <span id="putsCount" class="count-badge">—</span>
+              <span class="section-chevron">▼</span>
+            </div>
+            <div id="putsContent">
+              <div id="putEntrySignal" class="entry-signal hidden">
+                <div class="entry-signal-inner">
+                  <span class="entry-lightning">⚡</span>
+                  <div class="entry-body">
+                    <div id="putEntrySignalTitle" class="entry-title">Enter below $—</div>
+                    <div id="putEntrySignalSub" class="entry-sub">Wait for price to break &amp; hold below this level before buying puts</div>
+                  </div>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table class="opts-table">
+                  <thead><tr>
+                    <th>#</th>
+                    <th class="sortable" data-sort="strike">STRIKE</th>
+                    <th>ENTRY (break ↓)</th>
+                    <th>EXPIRY</th>
+                    <th class="sortable" data-sort="dte">DTE</th>
+                    <th class="sortable" data-sort="bid">BID</th>
+                    <th class="sortable" data-sort="ask">ASK</th>
+                    <th class="sortable" data-sort="mid">MID</th>
+                    <th class="sortable" data-sort="volume">VOLUME</th>
+                    <th class="sortable" data-sort="open_interest">OI</th>
+                    <th class="sortable" data-sort="iv">IV %</th>
+                    <th class="greek-col sortable" data-sort="delta" title="Delta">Δ DELTA</th>
+                    <th class="greek-col sortable" data-sort="theta" title="Theta">Θ/DAY</th>
+                    <th class="greek-col sortable" data-sort="vega" title="Vega">V VEGA</th>
+                    <th class="sortable" data-sort="pop" title="Probability of profit">POP %</th>
+                    <th class="sortable" data-sort="expected_value" title="Expected value">EV $</th>
+                    <th title="Liquidity grade">LIQ</th>
+                    <th class="sortable" data-sort="score">SCORE</th>
+                    <th class="sizing-col">BUY</th>
+                    <th class="sizing-col">COST</th>
+                    <th class="sizing-col">MAX LOSS</th>
+                    <th class="sizing-col">BREAKEVEN</th>
+                    <th class="sizing-col">2× AT</th>
+                    <th>SIGNALS</th>
+                  </tr></thead>
+                  <tbody id="optsBodyPuts"></tbody>
+                </table>
+              </div>
+              <div id="noOptionsPuts" class="no-options hidden">No tradeable put options found.</div>
+            </div>
+          </div>
+
+          <!-- ── SPREADS section ────────────────────────────────── -->
+          <div class="opts-section" id="spreadsSection">
+            <div class="opts-section-head spreads-section-head" onclick="toggleSection('spreadsContent')">
+              <span>↕ Spreads</span>
+              <span id="spreadsCount" class="count-badge">—</span>
+              <span class="section-chevron">▼</span>
+            </div>
+            <div id="spreadsContent">
+              <div class="opts-filters spread-filters">
+                <label class="opt-filter">
+                  <span>Direction</span>
+                  <select id="filterSpreadDir" onchange="renderSpreadsFiltered()">
+                    <option value="all">All</option>
+                    <option value="bullish">Bullish</option>
+                    <option value="bearish">Bearish</option>
+                  </select>
+                </label>
+                <label class="opt-filter">
+                  <span>Type</span>
+                  <select id="filterSpreadType" onchange="renderSpreadsFiltered()">
+                    <option value="all">All 4 Types</option>
+                    <option value="Bull Call">Bull Call</option>
+                    <option value="Bear Put">Bear Put</option>
+                    <option value="Bull Put">Bull Put</option>
+                    <option value="Bear Call">Bear Call</option>
+                  </select>
+                </label>
+                <label class="opt-filter">
+                  <span>Min R/R</span>
+                  <input type="number" id="filterSpreadRR" value="0" min="0" max="20" step="0.5" onchange="renderSpreadsFiltered()" />
+                </label>
+                <label class="opt-filter">
+                  <span>Min POP%</span>
+                  <input type="number" id="filterSpreadPop" value="0" min="0" max="100" step="5" onchange="renderSpreadsFiltered()" />
+                </label>
+                <button class="btn-secondary" onclick="resetSpreadFilters()" style="margin-left:auto;font-size:11px">Reset</button>
+              </div>
+              <div class="table-scroll">
+                <table class="opts-table spreads-table">
+                  <thead><tr>
+                    <th>#</th>
+                    <th>TYPE</th>
+                    <th title="Long strike / short strike">LONG K / SHORT K</th>
+                    <th>EXPIRY</th>
+                    <th title="Days to expiry">DTE</th>
+                    <th title="Net debit paid (positive) or credit received (negative) per share">NET</th>
+                    <th title="Spread width in dollars">WIDTH</th>
+                    <th title="Max profit per contract (100 shares)">MAX PROFIT</th>
+                    <th title="Max loss per contract (100 shares)">MAX LOSS</th>
+                    <th title="Stock price at breakeven at expiry">BREAKEVEN</th>
+                    <th title="Risk/Reward — max profit ÷ max loss">R/R</th>
+                    <th title="Probability of profit at expiry">POP%</th>
+                    <th>SCORE</th>
+                    <th class="sizing-col">CONTRACTS</th>
+                    <th class="sizing-col">AT RISK</th>
+                    <th>SIGNALS</th>
+                  </tr></thead>
+                  <tbody id="spreadsBody"></tbody>
+                </table>
+              </div>
+              <div id="noSpreads" class="no-options hidden">No vertical spreads found for this ticker.</div>
+            </div>
+          </div>
+
         </div>
       </div>
     </section>
