@@ -15,6 +15,7 @@ html, body {
   height: 100%; background: var(--bg); color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   font-size: 13px; line-height: 1.4; -webkit-font-smoothing: antialiased;
+  overflow-x: hidden; max-width: 100%;
 }
 
 /* Header */
@@ -23,6 +24,7 @@ html, body {
   padding: 0 16px; height: 48px;
   background: var(--bg2); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 100;
+  overflow: hidden; min-width: 0;
 }
 .header-brand {
   display: flex; align-items: center; gap: 8px;
@@ -319,7 +321,8 @@ html, body {
 .batch-table .batch-error { color: var(--text3); font-style: italic; }
 
 /* Dashboard */
-.dashboard { padding: 0 14px 24px; }
+.dashboard { padding: 0 14px 24px; max-width: 100%; overflow-x: hidden; }
+.picks-screen { overflow-x: hidden; }
 
 .summary-strip { display: flex; flex-wrap: wrap; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); margin: 16px 0; overflow: hidden; }
 .sstat { display: flex; flex-direction: column; padding: 7px 14px; border-right: 1px solid var(--border); min-width: 80px; }

@@ -1614,7 +1614,7 @@ _DTE_BUCKETS = [(0, 7), (8, 14), (15, 30), (31, 60)]
 
 def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
                       vol_sig, best_calls, supports, resistances, trend_score=0):
-    """Return one pick dict per DTE bucket (Weekly/2-Week/Monthly/Swing)."""
+    """Return one call pick dict per DTE bucket (Weekly/2-Week/Monthly/Swing)."""
     res_prices = [l['price'] for l in resistances[:3]]
     sup_prices = [l['price'] for l in supports[:3]]
     picks = []
@@ -1627,6 +1627,7 @@ def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
         conf = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret,
                                   trend_score=trend_score, option_type='call')
         picks.append({
+            'opt_type':          'call',
             'ticker':            ticker,
             'company_name':      company_name,
             'current_price':     round(current_price, 2),
@@ -1654,8 +1655,82 @@ def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
     return picks
 
 
+def _picks_from_puts(ticker, company_name, current_price, sector, sector_ret,
+                     vol_sig, best_puts, supports, resistances, trend_score=0):
+    """Return one put pick dict per DTE bucket — mirror of _picks_from_calls."""
+    res_prices = [l['price'] for l in resistances[:3]]
+    sup_prices = [l['price'] for l in supports[:3]]
+    picks = []
+    for dte_min, dte_max in _DTE_BUCKETS:
+        bucket = sorted([p for p in best_puts if dte_min <= p['dte'] <= dte_max],
+                        key=lambda x: x['score'], reverse=True)
+        if not bucket:
+            continue
+        top  = bucket[0]
+        conf = compute_confidence(top['score'], vol_sig, top['reasons'], sector_ret,
+                                  trend_score=trend_score, option_type='put')
+        picks.append({
+            'opt_type':          'put',
+            'ticker':            ticker,
+            'company_name':      company_name,
+            'current_price':     round(current_price, 2),
+            'sector':            sector,
+            'sector_return':     sector_ret,
+            'strike':            top['strike'],
+            'expiry':            top['expiry'],
+            'dte':               top['dte'],
+            'bid':               top['bid'],
+            'ask':               top['ask'],
+            'mid':               top['mid'],
+            'volume':            top['volume'],
+            'open_interest':     top['open_interest'],
+            'iv':                top['iv'],
+            'score':             top['score'],
+            'confidence':        conf,
+            'conviction':        conviction_label(conf),
+            'conviction_reason': conviction_reason(top, sector, sector_ret, vol_sig),
+            'signals':           top['reasons'][:4],
+            'volume_signal':     vol_sig,
+            'itm':               top.get('itm', False),
+            'support_levels':    sup_prices,
+            'resistance_levels': res_prices,
+        })
+    return picks
+
+
+def _score_chain_rows(chain_df, current_price, supports, resistances, dte, opt_type):
+    """Score all rows in a calls or puts DataFrame; return scored list."""
+    scored = []
+    score_fn = score_call if opt_type == 'call' else score_put
+    strike_lo = current_price * (0.40 if opt_type == 'put' else 0.90)
+    strike_hi = current_price * (1.10 if opt_type == 'put' else 1.60)
+    df = chain_df[(chain_df['strike'] >= strike_lo) & (chain_df['strike'] <= strike_hi)]
+    for _, row in df.iterrows():
+        opt  = row.to_dict()
+        bid  = _sf(opt.get('bid'));  ask = _sf(opt.get('ask'))
+        last = _sf(opt.get('lastPrice'))
+        iv   = _sf(opt.get('impliedVolatility'))
+        if bid <= 0 and ask <= 0 and last > 0:
+            bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
+            opt['bid'] = bid; opt['ask'] = ask
+        greeks_f = compute_greeks(current_price, _sf(opt.get('strike')), dte, iv, opt_type)
+        res = score_fn(opt, current_price, supports, resistances, dte, greeks_f)
+        if not res: continue
+        sc, reasons = res
+        scored.append({
+            'strike': _sf(opt.get('strike')), 'expiry': None, 'dte': dte,
+            'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid + ask) / 2, 2),
+            'volume': int(_sf(opt.get('volume'))),
+            'open_interest': int(_sf(opt.get('openInterest'))),
+            'iv': round(iv * 100, 1),
+            'score': sc, 'reasons': reasons,
+            'itm': bool(opt.get('inTheMoney', False)),
+        })
+    return scored
+
+
 def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
-    """Scan one ticker; returns a LIST of picks (one per DTE bucket)."""
+    """Scan one ticker; returns a LIST of picks (calls + puts, one per DTE bucket each)."""
     try:
         # ── Fast path: use pre-fetched batch history ──────────────────────────
         if prefetch_hist is not None and not prefetch_hist.empty:
@@ -1671,66 +1746,71 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                         resistances = sorted([l for l in sr_raw if l['type'] == 'resistance' and l['price'] > current_price * 0.97], key=lambda x: x['price'])[:4]
                         exp_dates   = _yf_call(lambda: list(stock.options)) or []
                         today        = datetime.now()
-                        best_calls   = []
+                        best_calls, best_puts = [], []
                         fast_t_score, _, _ = compute_trend(hist)
                         for ds in exp_dates:
                             exp = datetime.strptime(ds, '%Y-%m-%d')
                             dte = (exp - today).days
                             if dte < 0 or dte > 60: continue
                             try:
-                                chain = _yf_call(lambda d=ds: stock.option_chain(d).calls)
-                                if chain is None or chain.empty: continue
-                                chain = chain[(chain['strike'] >= current_price * 0.90) & (chain['strike'] <= current_price * 1.60)]
-                                for _, row in chain.iterrows():
-                                    opt  = row.to_dict()
-                                    bid  = _sf(opt.get('bid'));  ask = _sf(opt.get('ask'))
-                                    last = _sf(opt.get('lastPrice'))
-                                    iv   = _sf(opt.get('impliedVolatility'))
-                                    if bid <= 0 and ask <= 0 and last > 0:
-                                        bid = round(last * 0.95, 2); ask = round(last * 1.05, 2)
-                                        opt['bid'] = bid; opt['ask'] = ask
-                                    greeks_f = compute_greeks(current_price, _sf(opt.get('strike')), dte, iv, 'call')
-                                    res = score_call(opt, current_price, supports, resistances, dte, greeks_f)
-                                    if not res: continue
-                                    sc, reasons = res
-                                    t_pts, t_reason = trend_score_modifier(fast_t_score, 'call')
-                                    if t_pts != 0:
-                                        sc = max(0, sc + t_pts)
-                                        if t_reason: reasons = list(reasons) + [t_reason]
-                                    best_calls.append({
-                                        'strike': _sf(opt.get('strike')), 'expiry': ds, 'dte': dte,
-                                        'bid': round(bid, 2), 'ask': round(ask, 2), 'mid': round((bid + ask) / 2, 2),
-                                        'volume': int(_sf(opt.get('volume'))),
-                                        'open_interest': int(_sf(opt.get('openInterest'))),
-                                        'iv': round(_sf(opt.get('impliedVolatility')) * 100, 1),
-                                        'score': sc, 'reasons': reasons,
-                                        'itm': bool(opt.get('inTheMoney', False)),
-                                    })
+                                full_chain = _yf_call(lambda d=ds: stock.option_chain(d))
+                                if full_chain is None: continue
+                                # Score calls
+                                if full_chain.calls is not None and not full_chain.calls.empty:
+                                    for rec in _score_chain_rows(full_chain.calls, current_price, supports, resistances, dte, 'call'):
+                                        rec['expiry'] = ds
+                                        t_pts, t_reason = trend_score_modifier(fast_t_score, 'call')
+                                        if t_pts: rec['score'] = max(0, rec['score'] + t_pts); rec['reasons'] = list(rec['reasons']) + ([t_reason] if t_reason else [])
+                                        best_calls.append(rec)
+                                # Score puts
+                                if full_chain.puts is not None and not full_chain.puts.empty:
+                                    for rec in _score_chain_rows(full_chain.puts, current_price, supports, resistances, dte, 'put'):
+                                        rec['expiry'] = ds
+                                        t_pts, t_reason = trend_score_modifier(fast_t_score, 'put')
+                                        if t_pts: rec['score'] = max(0, rec['score'] + t_pts); rec['reasons'] = list(rec['reasons']) + ([t_reason] if t_reason else [])
+                                        best_puts.append(rec)
                             except Exception as e:
                                 logger.warning('fast chain %s %s: %s', ticker, ds, e); continue
-                        if best_calls:
+                        if best_calls or best_puts:
                             avg_vol = float(hist['Volume'].mean()) if not hist.empty else 0
                             today_v = int(hist['Volume'].iloc[-1])  if not hist.empty else 0
                             ratio   = round(today_v / avg_vol, 2) if avg_vol > 0 else 1.0
                             vol_sig = 'High' if ratio > 1.4 else ('Low' if ratio < 0.6 else 'Normal')
-                            return _picks_from_calls(ticker, ticker, current_price, sector, sector_ret,
-                                                     vol_sig, best_calls, supports, resistances,
-                                                     trend_score=fast_t_score)
+                            picks = []
+                            if best_calls:
+                                picks += _picks_from_calls(ticker, ticker, current_price, sector, sector_ret,
+                                                           vol_sig, best_calls, supports, resistances,
+                                                           trend_score=fast_t_score)
+                            if best_puts:
+                                picks += _picks_from_puts(ticker, ticker, current_price, sector, sector_ret,
+                                                          vol_sig, best_puts, supports, resistances,
+                                                          trend_score=fast_t_score)
+                            return picks
                 except Exception as e:
                     logger.warning('fast scan %s: %s — falling back', ticker, e)
 
         # ── Slow path: full analyze_ticker ────────────────────────────────────
         r = analyze_ticker(ticker)
-        if r.get('error') or not r.get('top_calls'):
+        if r.get('error') or (not r.get('top_calls') and not r.get('top_puts')):
             return []
         vol_sig = r['volume']['signal']
         slow_t_score = r.get('trend', {}).get('score', 0)
-        return _picks_from_calls(
-            ticker, r['company_name'], r['current_price'], sector, sector_ret,
-            vol_sig, r['top_calls'],
-            r.get('support_levels', []), r.get('resistance_levels', []),
-            trend_score=slow_t_score,
-        )
+        picks = []
+        if r.get('top_calls'):
+            picks += _picks_from_calls(
+                ticker, r['company_name'], r['current_price'], sector, sector_ret,
+                vol_sig, r['top_calls'],
+                r.get('support_levels', []), r.get('resistance_levels', []),
+                trend_score=slow_t_score,
+            )
+        if r.get('top_puts'):
+            picks += _picks_from_puts(
+                ticker, r['company_name'], r['current_price'], sector, sector_ret,
+                vol_sig, r['top_puts'],
+                r.get('support_levels', []), r.get('resistance_levels', []),
+                trend_score=slow_t_score,
+            )
+        return picks
     except Exception as e:
         logger.warning('picks scan %s: %s', ticker, e)
         return []

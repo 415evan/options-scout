@@ -378,7 +378,7 @@ function renderPicksTable(picks) {
   tbody.innerHTML = '';
   if (!picks.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="14" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
+    tr.innerHTML = `<td colspan="15" style="text-align:center;padding:32px;color:var(--text3);font-size:13px">
       No picks found in ${_activeSector || 'this sector'} this scan — try ↻ Refresh or select another sector.
     </td>`;
     tbody.appendChild(tr);
@@ -389,6 +389,7 @@ function renderPicksTable(picks) {
   picks.forEach((pick, i) => {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
+    const isPut     = pick.opt_type === 'put';
     const dteClass  = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 21 ? 'dte-swing' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
     const confPct   = Math.min(pick.confidence, 100);
     const confColor = confPct >= 80 ? 'var(--green)' : confPct >= 65 ? 'var(--blue)' : confPct >= 50 ? 'var(--yellow)' : 'var(--text3)';
@@ -400,25 +401,48 @@ function renderPicksTable(picks) {
     const sectorSign = sectorRet >= 0 ? '+' : '';
     const why = pick.conviction_reason || '';
 
-    // Entry signal for picks table: fraction of gap, scales with OTM% so each pick differs
+    // Type badge
+    const typeBadge = isPut
+      ? `<span class="spread-bear" style="font-size:10px;padding:1px 6px">📉 Put</span>`
+      : `<span class="spread-bull" style="font-size:10px;padding:1px 6px">📈 Call</span>`;
+
+    // Entry signal — calls: break above resistance; puts: break below support
     const pickStep = pick.current_price >= 500 ? 10 : pick.current_price >= 100 ? 5 : 2.5;
     const pickRoundUnit = pickStep / 2;
-    const pickRes  = (pick.resistance_levels || []).filter(l => l > pick.current_price && l < pick.strike);
-    const pickOtmFrac = (pick.strike - pick.current_price) / pick.current_price;
-    const pickFraction = Math.min(0.15 + pickOtmFrac * 1.5, 0.40);
-    let   pickEntry = pick.current_price + (pick.strike - pick.current_price) * pickFraction;
-    pickEntry = Math.round(pickEntry / pickRoundUnit) * pickRoundUnit;
-    const pickSnap = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.005);
-    if (pickSnap) pickEntry = pickSnap;
-    if (pickEntry <= pick.current_price) pickEntry = Math.ceil((pick.current_price + pickRoundUnit) / pickRoundUnit) * pickRoundUnit;
-    if (pickEntry >= pick.strike)        pickEntry = parseFloat((pick.strike - pickRoundUnit).toFixed(2));
-    pickEntry = parseFloat(pickEntry.toFixed(2));
-    const pickUpside = (((pick.strike - pickEntry) / pickEntry) * 100).toFixed(0);
+    let entryCellHtml;
+    if (isPut) {
+      const supBelow = (pick.support_levels || []).filter(l => l < pick.current_price && l > pick.strike);
+      const otmFrac  = (pick.current_price - pick.strike) / pick.current_price;
+      const fraction = Math.min(0.15 + otmFrac * 1.5, 0.40);
+      let   entry = pick.current_price - (pick.current_price - pick.strike) * fraction;
+      entry = Math.round(entry / pickRoundUnit) * pickRoundUnit;
+      const snap = supBelow.find(s => Math.abs(s - entry) / entry < 0.005);
+      if (snap) entry = snap;
+      entry = parseFloat(Math.max(pick.strike + pickRoundUnit, Math.min(pick.current_price - pickRoundUnit, entry)).toFixed(2));
+      const downside = (((entry - pick.strike) / entry) * 100).toFixed(0);
+      entryCellHtml = `<span class="entry-level-badge entry-put" title="Enter when price breaks below ${fmt$(entry)} — still ${downside}% to ${fmt$(pick.strike)} strike">⚡ &lt; ${fmt$(entry)}</span>`;
+    } else {
+      const pickRes  = (pick.resistance_levels || []).filter(l => l > pick.current_price && l < pick.strike);
+      const pickOtmFrac = (pick.strike - pick.current_price) / pick.current_price;
+      const pickFraction = Math.min(0.15 + pickOtmFrac * 1.5, 0.40);
+      let   pickEntry = pick.current_price + (pick.strike - pick.current_price) * pickFraction;
+      pickEntry = Math.round(pickEntry / pickRoundUnit) * pickRoundUnit;
+      const pickSnap = pickRes.find(r => Math.abs(r - pickEntry) / pickEntry < 0.005);
+      if (pickSnap) pickEntry = pickSnap;
+      if (pickEntry <= pick.current_price) pickEntry = Math.ceil((pick.current_price + pickRoundUnit) / pickRoundUnit) * pickRoundUnit;
+      if (pickEntry >= pick.strike)        pickEntry = parseFloat((pick.strike - pickRoundUnit).toFixed(2));
+      pickEntry = parseFloat(pickEntry.toFixed(2));
+      const pickUpside = (((pick.strike - pickEntry) / pickEntry) * 100).toFixed(0);
+      entryCellHtml = pickEntry > pick.current_price
+        ? `<span class="entry-level-badge" title="Enter when price breaks ${fmt$(pickEntry)} — still ${pickUpside}% to ${fmt$(pick.strike)} strike">⚡ &gt; ${fmt$(pickEntry)}</span>`
+        : `<span style="color:var(--text3);font-size:11px">—</span>`;
+    }
 
     tr.innerHTML = `
       <td>${i + 1}</td>
+      <td>${typeBadge}</td>
       <td><strong style="color:var(--blue)">${pick.ticker}</strong>${otmStr}${cheapTag}</td>
-      <td class="entry-cell">${pickEntry > pick.current_price ? `<span class="entry-level-badge" title="Enter when price breaks ${fmt$(pickEntry)} — still ${pickUpside}% to ${fmt$(pick.strike)} strike">⚡ &gt; ${fmt$(pickEntry)}</span>` : '<span style="color:var(--text3);font-size:11px">—</span>'}</td>
+      <td class="entry-cell">${entryCellHtml}</td>
       <td><span class="sec-chip ${sectorCls}">${shortSector(pick.sector || '')}<span>${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
       <td><strong>${fmt$(pick.strike)}</strong></td>
