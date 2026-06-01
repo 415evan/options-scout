@@ -37,9 +37,79 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><line x1="12" y1="6" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
       <span id="portfolioBtnText">Portfolio</span>
     </button>
+    <button id="strategyBtn" class="btn-secondary header-btn strategy-btn" title="Set your trading strategy &amp; risk profile" onclick="openStrategyModal()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+      <span id="strategyBtnText">Strategy</span>
+    </button>
+    <button id="chatBtn" class="btn-secondary header-btn chat-header-btn hidden" title="AI Chat Assistant" onclick="openChat()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      AI Chat
+    </button>
     <span id="marketBadge" class="market-badge">● Loading…</span>
   </div>
 </header>
+
+<!-- ── Strategy Builder Modal ─────────────────────────────────────────────── -->
+<div id="strategyModal" class="modal-backdrop hidden">
+  <div class="modal strategy-modal">
+    <div class="modal-head">
+      <h3>⭐ Strategy Builder</h3>
+      <button class="modal-close" onclick="closeStrategyModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Configure your trading style and risk tolerance. Options Scout will rate every pick as <strong>Ideal</strong>, <strong>Good</strong>, <strong>Not Ideal</strong>, or <strong>Poor</strong> for your profile.</p>
+
+      <label class="field">
+        <span>Trading Style</span>
+        <div class="strategy-grid" id="styleGrid">
+          <button class="strategy-chip" data-val="day_trade" onclick="selectStrategyChip('style','day_trade')">⚡ Day Trade</button>
+          <button class="strategy-chip" data-val="swing" onclick="selectStrategyChip('style','swing')">📈 Swing</button>
+          <button class="strategy-chip" data-val="scalping" onclick="selectStrategyChip('style','scalping')">⚡ Scalping</button>
+          <button class="strategy-chip" data-val="investing" onclick="selectStrategyChip('style','investing')">🏦 Investing</button>
+        </div>
+      </label>
+
+      <label class="field">
+        <span>Risk Tolerance</span>
+        <div class="strategy-grid" id="riskGrid">
+          <button class="strategy-chip" data-val="conservative" onclick="selectStrategyChip('risk','conservative')">🛡 Conservative</button>
+          <button class="strategy-chip" data-val="moderate" onclick="selectStrategyChip('risk','moderate')">⚖ Moderate</button>
+          <button class="strategy-chip" data-val="aggressive" onclick="selectStrategyChip('risk','aggressive')">🔥 Aggressive</button>
+        </div>
+      </label>
+
+      <div class="strategy-preview" id="strategyPreview"></div>
+
+      <label class="field" style="margin-top:16px">
+        <span>Anthropic API Key <span style="font-weight:400;color:var(--text3)">(for AI Chat)</span></span>
+        <input id="anthropicKeyInput" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" style="width:100%;margin-top:4px" />
+        <span class="modal-hint" style="font-size:11px;margin-top:4px;display:block">Get a key at <a href="#" onclick="openAnthropicDocs();return false" style="color:var(--blue)">console.anthropic.com</a> — stored locally, never sent to our servers.</span>
+      </label>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeStrategyModal()">Cancel</button>
+        <button class="btn-primary" onclick="saveStrategy()">Save Strategy</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── AI Chat Panel ───────────────────────────────────────────────────────── -->
+<div id="chatPanel" class="chat-panel hidden">
+  <div class="chat-header">
+    <span>🤖 AI Assistant — <span id="chatTicker">Select a ticker first</span></span>
+    <button class="chat-close-btn" onclick="closeChat()">×</button>
+  </div>
+  <div id="chatMessages" class="chat-messages">
+    <div class="chat-bubble assistant">
+      Hey! I can answer questions about this ticker, explain options strategies, or help you evaluate a specific pick — no API key needed. Try asking: "What's the trend?", "Best calls", "Key levels", or "Explain IV rank".
+    </div>
+  </div>
+  <div class="chat-input-row">
+    <input id="chatInput" type="text" placeholder="Ask about this ticker or any options strategy…" onkeydown="if(event.key==='Enter')sendChat()" />
+    <button class="chat-send-btn" onclick="sendChat()">Send</button>
+  </div>
+</div>
 
 <!-- Legal disclaimer banner -->
 <div id="disclaimerBar" class="disclaimer-bar">
@@ -244,6 +314,10 @@
     <div class="dte-filter-bar">
       <span class="pf-label">Expiry:</span>
       <div id="dteFilterBar" class="dte-btn-group"></div>
+      <div class="dte-divider"></div>
+      <button id="dayTradeFilterBtn" class="dt-filter-btn" onclick="toggleDayTradeFilter()" title="Show only options with tight spreads, short DTE, and high volume — suitable for same-day entry & exit">
+        ⚡ Day Trade
+      </button>
     </div>
 
     <div id="picksLoading" class="picks-loading">
@@ -257,7 +331,7 @@
           <thead><tr>
             <th>#</th><th>TYPE</th><th>TICKER</th><th>ENTRY SIGNAL</th><th>SECTOR</th><th>PRICE</th>
             <th>STRIKE</th><th>EXPIRY</th><th>DTE</th><th>MID</th>
-            <th>CONFIDENCE</th><th>CONVICTION</th><th>WHY</th><th>ALERT</th><th></th>
+            <th>CONFIDENCE</th><th>CONVICTION</th><th title="Strategy fit for your profile">FIT</th><th>WHY</th><th>ALERT</th><th></th>
           </tr></thead>
           <tbody id="picksBody"></tbody>
         </table>
@@ -448,6 +522,13 @@
           </span>
         </div>
         <div class="card-body chart-card-body">
+          <div class="tf-bar chart-tf-bar">
+            <button class="tf-btn tf-active" data-tf="all"      onclick="setDashboardTF('all')">All</button>
+            <button class="tf-btn"           data-tf="weekly"   onclick="setDashboardTF('weekly')">1W</button>
+            <button class="tf-btn"           data-tf="biweekly" onclick="setDashboardTF('biweekly')">2W</button>
+            <button class="tf-btn"           data-tf="monthly"  onclick="setDashboardTF('monthly')">1M</button>
+            <button class="tf-btn"           data-tf="swing"    onclick="setDashboardTF('swing')">Swing</button>
+          </div>
           <svg id="priceChart" class="price-chart" viewBox="0 0 320 180" preserveAspectRatio="none"></svg>
           <div class="chart-legend">
             <span><span class="chart-dot dot-price"></span>Price</span>
@@ -471,6 +552,17 @@
           <div class="flow-row"><span class="flow-label">RSI (14)</span><span class="flow-val" id="ind-rsi">—</span></div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>Chart Patterns
+            <span class="info-tip" title="Detected patterns from the last 40 sessions. Bullish = green, Bearish = red, Neutral = gray. These are probabilistic signals, not guarantees.">ⓘ</span>
+          </span>
+        </div>
+        <div class="card-body" id="chartPatternsCard">
+          <div class="flow-row" style="color:var(--text3);font-size:12px">Analyze a ticker to see patterns.</div>
+        </div>
+      </div>
     </aside>
 
     <section class="panel-right">
@@ -478,6 +570,17 @@
         <div class="card-head">
           <span id="optionsCardTitle">Options</span>
         </div>
+
+        <!-- Timeframe selector — filters calls, puts & spreads by DTE -->
+        <div class="tf-bar opts-tf-bar">
+          <span class="tf-label">Timeframe</span>
+          <button class="tf-btn tf-active" data-tf="all"      onclick="setDashboardTF('all')">All</button>
+          <button class="tf-btn"           data-tf="weekly"   onclick="setDashboardTF('weekly')">Weekly<small>0–7d</small></button>
+          <button class="tf-btn"           data-tf="biweekly" onclick="setDashboardTF('biweekly')">Bi-Weekly<small>8–14d</small></button>
+          <button class="tf-btn"           data-tf="monthly"  onclick="setDashboardTF('monthly')">Monthly<small>15–30d</small></button>
+          <button class="tf-btn"           data-tf="swing"    onclick="setDashboardTF('swing')">Swing<small>31–60d</small></button>
+        </div>
+
         <div class="card-body no-pad">
 
           <!-- Risk warning banner -->
@@ -565,6 +668,9 @@
                     <th class="sortable" data-sort="expected_value" title="Black-Scholes expected value of contract (consensus-priced)">EV $</th>
                     <th title="A/B/C grade based on open interest and bid-ask spread">LIQ</th>
                     <th class="sortable" data-sort="score">SCORE</th>
+                    <th title="Strategy fit based on your profile">FIT</th>
+                    <th class="sizing-col" title="Stop-loss at 50% of premium paid">STOP</th>
+                    <th class="sizing-col" title="Take-profit at 2× premium paid">TARGET</th>
                     <th class="sizing-col">BUY</th>
                     <th class="sizing-col">COST</th>
                     <th class="sizing-col">MAX LOSS</th>
@@ -617,6 +723,9 @@
                     <th class="sortable" data-sort="expected_value" title="Expected value">EV $</th>
                     <th title="Liquidity grade">LIQ</th>
                     <th class="sortable" data-sort="score">SCORE</th>
+                    <th title="Strategy fit based on your profile">FIT</th>
+                    <th class="sizing-col" title="Stop-loss at 50% of premium paid">STOP</th>
+                    <th class="sizing-col" title="Take-profit at 2× premium paid">TARGET</th>
                     <th class="sizing-col">BUY</th>
                     <th class="sizing-col">COST</th>
                     <th class="sizing-col">MAX LOSS</th>
@@ -692,6 +801,43 @@
                 </table>
               </div>
               <div id="noSpreads" class="no-options hidden">No vertical spreads found for this ticker.</div>
+            </div>
+          </div>
+
+          <!-- ── DAY TRADE section ──────────────────────────── -->
+          <div class="opts-section" id="dayTradeSection">
+            <div class="opts-section-head dt-section-head" onclick="toggleSection('dayTradeContent')">
+              <span>⚡ Day Trade Picks</span>
+              <span id="dayTradeCount" class="count-badge">—</span>
+              <span class="section-chevron">▼</span>
+            </div>
+            <div id="dayTradeContent">
+              <div class="dt-explainer">
+                Options ranked for same-day entry &amp; exit. Ranked by: spread tightness, delta, and today's volume.
+                <strong>MIN MOVE</strong> = stock dollars the stock must move just to cover your round-trip spread.
+              </div>
+              <div class="table-scroll">
+                <table class="opts-table dt-table">
+                  <thead><tr>
+                    <th>#</th>
+                    <th>TYPE</th>
+                    <th title="Strike price">STRIKE</th>
+                    <th>EXPIRY</th>
+                    <th title="Days to expiry">DTE</th>
+                    <th title="Bid price">BID</th>
+                    <th title="Ask price">ASK</th>
+                    <th title="Midpoint price">MID</th>
+                    <th title="Today's volume — higher = easier to exit">VOL</th>
+                    <th title="Delta — premium change per $1 stock move">Δ DELTA</th>
+                    <th title="Bid-ask spread as % of mid — you pay this twice (entry + exit)">SPREAD %</th>
+                    <th title="Premium change per $1 stock move × 100 shares per contract">$ / MOVE</th>
+                    <th title="Stock must move this many dollars in your direction just to cover the round-trip spread">MIN MOVE</th>
+                    <th title="Day trade score — higher is better">DT SCORE</th>
+                  </tr></thead>
+                  <tbody id="dayTradeBody"></tbody>
+                </table>
+              </div>
+              <div id="noDayTrade" class="no-options hidden">No day-tradeable options found — try a more liquid ticker.</div>
             </div>
           </div>
 

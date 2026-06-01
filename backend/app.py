@@ -35,8 +35,11 @@ _yf_sem = threading.Semaphore(2)
 
 def _yf_call(fn, retries=6, base_delay=4.0):
     """Call a yfinance function, retrying on 429 / rate-limit errors.
-    Holds a global semaphore so at most 2 threads hit yfinance simultaneously."""
+    Holds a global semaphore so at most 2 threads hit yfinance simultaneously.
+    IMPORTANT: sleep happens *outside* the semaphore so other threads can proceed."""
     for attempt in range(retries):
+        rate_limited = False
+        delay = 0.0
         with _yf_sem:
             try:
                 return fn()
@@ -45,10 +48,15 @@ def _yf_call(fn, retries=6, base_delay=4.0):
                 if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit', 'temporarily')):
                     if attempt < retries - 1:
                         delay = min(base_delay * (2 ** attempt), 60)  # cap at 60s
-                        logger.warning('yf rate limited — retry in %.0fs (attempt %d/%d)', delay, attempt + 1, retries)
-                        time.sleep(delay)
-                        continue
-                raise
+                        rate_limited = True
+                    else:
+                        raise
+                else:
+                    raise
+        # Sleep OUTSIDE the semaphore so other threads aren't blocked
+        if rate_limited:
+            logger.warning('yf rate limited — retry in %.0fs (attempt %d/%d)', delay, attempt + 1, retries)
+            time.sleep(delay)
     return None
 
 
@@ -1140,6 +1148,123 @@ def generate_vertical_spreads(calls_df, puts_df, current_price, dte, ds, t_score
     return spreads[:30]
 
 
+# ─── Chart Pattern Detection ─────────────────────────────────────────────────
+
+def detect_chart_patterns(hist, current_price, supports, resistances):
+    """Detect common chart patterns from OHLCV history.
+    Returns list of dicts: {pattern, signal, description, bar_index (optional)}
+    """
+    patterns = []
+    if hist is None or len(hist) < 20:
+        return patterns
+
+    closes = hist['Close'].values.astype(float)
+    highs  = hist['High'].values.astype(float)
+    lows   = hist['Low'].values.astype(float)
+    n      = len(closes)
+
+    # ── 1. Trend direction (linear regression over last 20 bars) ─────────────
+    recent = closes[-20:]
+    x      = np.arange(len(recent), dtype=float)
+    slope  = float(np.polyfit(x, recent, 1)[0])
+    slope_pct = slope / current_price * 100   # % of price per bar
+
+    if slope_pct > 0.12:
+        patterns.append({
+            'pattern': 'Uptrend',
+            'signal': 'bullish',
+            'description': f'Price trending up ~{slope_pct:.2f}%/day over 20 sessions'
+        })
+    elif slope_pct < -0.12:
+        patterns.append({
+            'pattern': 'Downtrend',
+            'signal': 'bearish',
+            'description': f'Price trending down ~{abs(slope_pct):.2f}%/day over 20 sessions'
+        })
+    else:
+        patterns.append({
+            'pattern': 'Sideways',
+            'signal': 'neutral',
+            'description': 'Price consolidating — watch for a breakout in either direction'
+        })
+
+    # ── 2. Breakout / Breakdown (vs 20-day range) ────────────────────────────
+    high20 = float(max(highs[-20:]))
+    low20  = float(min(lows[-20:]))
+    if current_price >= high20 * 0.985:
+        patterns.append({
+            'pattern': 'Breakout',
+            'signal': 'bullish',
+            'description': f'Trading at/near 20-day high ${high20:.2f} — potential upside breakout'
+        })
+    elif current_price <= low20 * 1.015:
+        patterns.append({
+            'pattern': 'Breakdown',
+            'signal': 'bearish',
+            'description': f'Trading at/near 20-day low ${low20:.2f} — potential downside breakdown'
+        })
+
+    # ── 3. Bull Flag / Bear Flag ─────────────────────────────────────────────
+    # Pole = bars[-16:-6], flag = bars[-6:-1]
+    if n >= 16:
+        prior_move  = (closes[-6] - closes[-16]) / max(closes[-16], 0.01) * 100
+        recent_move = (closes[-1] - closes[-6])  / max(closes[-6],  0.01) * 100
+        if prior_move > 5 and -4 < recent_move < 0.5:
+            patterns.append({
+                'pattern': 'Bull Flag',
+                'signal': 'bullish',
+                'description': f'Strong +{prior_move:.1f}% move followed by mild {recent_move:.1f}% pullback — bullish continuation setup'
+            })
+        elif prior_move < -5 and -0.5 < recent_move < 4:
+            patterns.append({
+                'pattern': 'Bear Flag',
+                'signal': 'bearish',
+                'description': f'Strong {prior_move:.1f}% drop followed by mild +{recent_move:.1f}% bounce — bearish continuation setup'
+            })
+
+    # ── 4. Double Top / Double Bottom ────────────────────────────────────────
+    if n >= 40:
+        left_highs  = highs[n-40:n-20]
+        right_highs = highs[n-20:]
+        left_lows   = lows[n-40:n-20]
+        right_lows  = lows[n-20:]
+
+        peak_l  = float(max(left_highs));  peak_r  = float(max(right_highs))
+        trough_l = float(min(left_lows));  trough_r = float(min(right_lows))
+
+        if (abs(peak_l - peak_r) / max(peak_r, 0.01) < 0.025
+                and current_price < peak_r * 0.975):
+            patterns.append({
+                'pattern': 'Double Top',
+                'signal': 'bearish',
+                'description': f'Two peaks near ${max(peak_l, peak_r):.2f} — potential bearish reversal'
+            })
+
+        if (abs(trough_l - trough_r) / max(abs(trough_r), 0.01) < 0.025
+                and current_price > trough_r * 1.025):
+            patterns.append({
+                'pattern': 'Double Bottom',
+                'signal': 'bullish',
+                'description': f'Two troughs near ${min(trough_l, trough_r):.2f} — potential bullish reversal'
+            })
+
+    # ── 5. Volume confirmation ────────────────────────────────────────────────
+    if 'Volume' in hist.columns and n >= 10:
+        vols    = hist['Volume'].values.astype(float)
+        avg_vol = float(np.mean(vols[-20:])) if n >= 20 else float(np.mean(vols))
+        last_v  = float(vols[-1])
+        if avg_vol > 0 and last_v > avg_vol * 1.5:
+            direction = 'bullish' if slope_pct > 0 else ('bearish' if slope_pct < 0 else 'neutral')
+            emoji     = '📈' if direction == 'bullish' else ('📉' if direction == 'bearish' else '⚡')
+            patterns.append({
+                'pattern': f'Volume Surge {emoji}',
+                'signal': direction,
+                'description': f'Today\'s volume is {last_v/avg_vol:.1f}× the 20-day average — confirms {direction} momentum'
+            })
+
+    return patterns
+
+
 # ─── Core analyze function (reused for single + batch) ────────────────────────
 
 def analyze_ticker(ticker):
@@ -1210,7 +1335,7 @@ def analyze_ticker(ticker):
             'near_earnings':  near_earn,                             # earnings date if in expiry window
         }
 
-    for ds in exp_dates[:10]:
+    for ds in exp_dates[:15]:
         exp = datetime.strptime(ds, '%Y-%m-%d')
         dte = (exp - today).days
         if dte < 0 or dte > 60: continue
@@ -1387,15 +1512,31 @@ def analyze_ticker(ticker):
             })
     except Exception: pass
 
+    # ── Chart pattern recognition ─────────────────────────────────────────────
+    chart_patterns = detect_chart_patterns(hist, current_price, supports, resistances)
+
+    # ── Day trade picks ────────────────────────────────────────────────────────
+    day_trade_picks = []
+    for opt in best_calls:
+        dt_score = _score_for_daytrading(opt, current_price)
+        if dt_score > 0:
+            day_trade_picks.append({**opt, 'dt_score': dt_score, 'opt_type': 'call'})
+    for opt in best_puts:
+        dt_score = _score_for_daytrading(opt, current_price)
+        if dt_score > 0:
+            day_trade_picks.append({**opt, 'dt_score': dt_score, 'opt_type': 'put'})
+    day_trade_picks.sort(key=lambda x: x['dt_score'], reverse=True)
+
     result = {
         'ticker': ticker,
         'company_name':   info.get('longName', ticker),
         'current_price':  round(current_price, 2),
         'support_levels': supports,
         'resistance_levels': resistances,
-        'top_calls':   best_calls[:25],
-        'top_puts':    best_puts[:25],
-        'top_spreads': best_spreads[:25],
+        'top_calls':        best_calls[:25],
+        'top_puts':         best_puts[:25],
+        'top_spreads':      best_spreads[:25],
+        'day_trade_picks':  day_trade_picks[:12],
         'trend': t_meta,
         'iv_rank': iv_rank_info,
         'options_flow': {
@@ -1404,6 +1545,7 @@ def analyze_ticker(ticker):
             'put_oi':     put_oi_total,
             **pc_ratio_data,
         },
+        'chart_patterns': chart_patterns,
         'price_history': price_history,
         'volume': {'today': today_v, 'avg': int(avg_vol), 'ratio': ratio, 'signal': sig, 'history': vhist},
         'stats': {
@@ -1538,23 +1680,97 @@ def get_sector_performance():
 
 
 def build_scan_list(sector_perf):
-    """Return ~30 tickers weighted toward hot sectors — fast enough for <15s scan."""
+    """Return ~20 tickers weighted toward hot sectors — fast enough for <30s scan."""
     ranked = list(sector_perf.keys())
-    # Slots: top 2 sectors get 4, next 2 get 3, rest get 2
-    slots  = [4, 4, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2]
+    # Slots: top 2 sectors get 3, next 2 get 2, rest get 1 — cap ~15 sector picks
+    slots  = [3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1]
     seen, result = set(), []
 
     for i, sector in enumerate(ranked):
-        n = slots[i] if i < len(slots) else 6
+        n = slots[i] if i < len(slots) else 1
         for t in SECTOR_TICKERS.get(sector, [])[:n]:
             if t not in seen:
                 seen.add(t); result.append((t, sector))
 
-    for t in SECTOR_TICKERS.get('Broad Market', []):
+    # Only add 5 broad market anchors for market-wide signals
+    for t in SECTOR_TICKERS.get('Broad Market', [])[:5]:
         if t not in seen:
             seen.add(t); result.append((t, 'Broad Market'))
 
-    return result
+    # Hard cap at 20 tickers total
+    return result[:20]
+
+
+def _score_for_daytrading(opt, current_price):
+    """
+    Score an option for same-day intraday trading suitability.
+    The two numbers that matter most for day traders:
+      • Spread tightness — you pay this TWICE (entry + exit)
+      • Delta — how much premium moves per $1 stock move
+    Returns 0 if the option fails hard filters (too wide, no volume, too far OTM).
+    """
+    bid    = opt.get('bid', 0) or 0
+    ask    = opt.get('ask', 0) or 0
+    mid    = (bid + ask) / 2 if (bid + ask) > 0 else 0
+    vol    = int(opt.get('volume', 0) or 0)
+    oi     = int(opt.get('open_interest', 0) or 0)
+    dte    = int(opt.get('dte', 99) or 99)
+    strike = opt.get('strike', current_price) or current_price
+    greeks = opt.get('greeks') or {}
+    delta  = abs(greeks.get('delta', 0) or 0)
+
+    # ── Hard filters ─────────────────────────────────────────────────────────
+    if ask <= 0:   return 0
+    if oi  < 50:   return 0
+    if dte > 21:   return 0  # too far out — gamma too slow for same-day moves
+    spread_pct = (ask - bid) / mid if mid > 0 else 1.0
+    if spread_pct > 0.25: return 0  # eating >25% on entry+exit = unworkable
+
+    otm_pct = abs(strike - current_price) / current_price * 100
+    if otm_pct > 12: return 0       # too far OTM — delta too low to respond intraday
+
+    score = 0
+
+    # ── Spread tightness (most critical — you pay it twice) ───────────────────
+    if   spread_pct < 0.04: score += 40
+    elif spread_pct < 0.08: score += 30
+    elif spread_pct < 0.12: score += 20
+    elif spread_pct < 0.18: score += 10
+
+    # ── Delta (premium movement per $1 stock move) ────────────────────────────
+    if   0.45 <= delta <= 0.65: score += 35   # sweet spot: ATM-ish
+    elif 0.35 <= delta < 0.45:  score += 25
+    elif 0.65 < delta <= 0.80:  score += 20   # deep ITM — moves less %-wise
+    elif 0.25 <= delta < 0.35:  score += 15
+    else:                        score +=  5
+
+    # ── Volume today (intraday exit liquidity) ────────────────────────────────
+    if   vol >= 2000: score += 30
+    elif vol >= 500:  score += 20
+    elif vol >= 200:  score += 12
+    elif vol >= 100:  score +=  6
+    elif vol >=  50:  score +=  2
+
+    # ── DTE (shorter = more gamma punch per point of stock move) ─────────────
+    if   dte == 0:  score += 25
+    elif dte <= 2:  score += 22
+    elif dte <= 5:  score += 18
+    elif dte <= 7:  score += 14
+    elif dte <= 10: score += 10
+    elif dte <= 14: score +=  6
+    else:           score +=  2
+
+    # ── Proximity to ATM ──────────────────────────────────────────────────────
+    if   otm_pct < 1: score += 20
+    elif otm_pct < 2: score += 15
+    elif otm_pct < 4: score += 10
+    elif otm_pct < 7: score +=  5
+
+    # ── Premium range (too cheap = lottery, too expensive = capital drain) ────
+    if   0.20 <= ask <= 3.00: score += 10
+    elif 3.00 <  ask <= 8.00: score +=  5
+
+    return score
 
 
 def compute_confidence(score, vol_signal, reasons, sector_ret=0.0, trend_score=0, option_type='call'):
@@ -1651,6 +1867,7 @@ def _picks_from_calls(ticker, company_name, current_price, sector, sector_ret,
             'itm':               top.get('itm', False),
             'support_levels':    sup_prices,
             'resistance_levels': res_prices,
+            'dt_score':          _score_for_daytrading(top, current_price),
         })
     return picks
 
@@ -1692,6 +1909,62 @@ def _picks_from_puts(ticker, company_name, current_price, sector, sector_ret,
             'signals':           top['reasons'][:4],
             'volume_signal':     vol_sig,
             'itm':               top.get('itm', False),
+            'support_levels':    sup_prices,
+            'resistance_levels': res_prices,
+            'dt_score':          _score_for_daytrading(top, current_price),
+        })
+    return picks
+
+
+def _picks_from_spreads(ticker, company_name, current_price, sector, sector_ret,
+                        vol_sig, best_spreads, supports, resistances, trend_score=0):
+    """Return one spread pick per DTE bucket for the welcome page."""
+    res_prices = [l['price'] for l in resistances[:3]]
+    sup_prices = [l['price'] for l in supports[:3]]
+    picks = []
+    for dte_min, dte_max in _DTE_BUCKETS:
+        bucket = sorted([s for s in best_spreads if dte_min <= s['dte'] <= dte_max],
+                        key=lambda x: x['score'], reverse=True)
+        if not bucket:
+            continue
+        top = bucket[0]
+        opt_dir = 'call' if top['direction'] == 'bullish' else 'put'
+        conf = compute_confidence(top['score'], vol_sig, top.get('reasons', []),
+                                  sector_ret, trend_score=trend_score, option_type=opt_dir)
+        mp = top.get('max_profit_per_contract', 0)
+        ml = top.get('max_loss_per_contract', 0)
+        rr = top.get('rr_ratio', 0)
+        picks.append({
+            'opt_type':          'spread',
+            'spread_type':       top['spread_type'],
+            'direction':         top['direction'],
+            'ticker':            ticker,
+            'company_name':      company_name,
+            'current_price':     round(current_price, 2),
+            'sector':            sector,
+            'sector_return':     sector_ret,
+            'long_strike':       top['long_strike'],
+            'short_strike':      top['short_strike'],
+            'strike':            top['long_strike'],
+            'expiry':            top['expiry'],
+            'dte':               top['dte'],
+            'net_cost':          top['net_cost'],
+            'max_profit':        mp,
+            'max_loss':          ml,
+            'breakeven':         top['breakeven'],
+            'rr_ratio':          rr,
+            'pop':               top.get('pop', 0),
+            'width':             top.get('width', 0),
+            'bid':               0,
+            'ask':               round(abs(top['net_cost']), 2),
+            'mid':               round(abs(top['net_cost']), 2),
+            'score':             top['score'],
+            'confidence':        conf,
+            'conviction':        conviction_label(conf),
+            'conviction_reason': f"R/R {rr:.1f}:1 — +${mp:.0f} / −${ml:.0f} per contract",
+            'signals':           top.get('reasons', [])[:4],
+            'volume_signal':     vol_sig,
+            'itm':               False,
             'support_levels':    sup_prices,
             'resistance_levels': res_prices,
         })
@@ -1744,16 +2017,17 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                         sr_raw      = find_sr_levels(hist)
                         supports    = sorted([l for l in sr_raw if l['type'] == 'support'    and l['price'] < current_price * 1.03], key=lambda x: x['price'], reverse=True)[:4]
                         resistances = sorted([l for l in sr_raw if l['type'] == 'resistance' and l['price'] > current_price * 0.97], key=lambda x: x['price'])[:4]
-                        exp_dates   = _yf_call(lambda: list(stock.options)) or []
+                        # Scanner: 2 retries max so rate-limit backoff stays short
+                        exp_dates   = _yf_call(lambda: list(stock.options), retries=2, base_delay=2.0) or []
                         today        = datetime.now()
-                        best_calls, best_puts = [], []
+                        best_calls, best_puts, best_spreads = [], [], []
                         fast_t_score, _, _ = compute_trend(hist)
                         for ds in exp_dates:
                             exp = datetime.strptime(ds, '%Y-%m-%d')
                             dte = (exp - today).days
                             if dte < 0 or dte > 60: continue
                             try:
-                                full_chain = _yf_call(lambda d=ds: stock.option_chain(d))
+                                full_chain = _yf_call(lambda d=ds: stock.option_chain(d), retries=2, base_delay=2.0)
                                 if full_chain is None: continue
                                 # Score calls
                                 if full_chain.calls is not None and not full_chain.calls.empty:
@@ -1769,9 +2043,19 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                                         t_pts, t_reason = trend_score_modifier(fast_t_score, 'put')
                                         if t_pts: rec['score'] = max(0, rec['score'] + t_pts); rec['reasons'] = list(rec['reasons']) + ([t_reason] if t_reason else [])
                                         best_puts.append(rec)
+                                # Generate spreads
+                                try:
+                                    if full_chain.calls is not None and full_chain.puts is not None:
+                                        sp = generate_vertical_spreads(
+                                            full_chain.calls, full_chain.puts,
+                                            current_price, dte, ds, fast_t_score, ticker
+                                        )
+                                        best_spreads.extend(sp)
+                                except Exception as se:
+                                    logger.warning('fast spread %s %s: %s', ticker, ds, se)
                             except Exception as e:
                                 logger.warning('fast chain %s %s: %s', ticker, ds, e); continue
-                        if best_calls or best_puts:
+                        if best_calls or best_puts or best_spreads:
                             avg_vol = float(hist['Volume'].mean()) if not hist.empty else 0
                             today_v = int(hist['Volume'].iloc[-1])  if not hist.empty else 0
                             ratio   = round(today_v / avg_vol, 2) if avg_vol > 0 else 1.0
@@ -1785,13 +2069,23 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
                                 picks += _picks_from_puts(ticker, ticker, current_price, sector, sector_ret,
                                                           vol_sig, best_puts, supports, resistances,
                                                           trend_score=fast_t_score)
+                            if best_spreads:
+                                best_spreads.sort(key=lambda x: x['score'], reverse=True)
+                                picks += _picks_from_spreads(ticker, ticker, current_price, sector, sector_ret,
+                                                             vol_sig, best_spreads, supports, resistances,
+                                                             trend_score=fast_t_score)
                             return picks
                 except Exception as e:
-                    logger.warning('fast scan %s: %s — falling back', ticker, e)
+                    msg = str(e).lower()
+                    if any(x in msg for x in ('too many requests', '429', 'rate limit', 'rate_limit', 'temporarily')):
+                        # Rate-limited in fast path — skip this ticker, don't make it worse
+                        logger.warning('fast scan %s: rate limited — skipping (no slow-path fallback)', ticker)
+                        return []
+                    logger.warning('fast scan %s: %s — falling back to slow path', ticker, e)
 
-        # ── Slow path: full analyze_ticker ────────────────────────────────────
+        # ── Slow path: full analyze_ticker (only reached if not rate-limited) ──
         r = analyze_ticker(ticker)
-        if r.get('error') or (not r.get('top_calls') and not r.get('top_puts')):
+        if r.get('error') or (not r.get('top_calls') and not r.get('top_puts') and not r.get('top_spreads')):
             return []
         vol_sig = r['volume']['signal']
         slow_t_score = r.get('trend', {}).get('score', 0)
@@ -1807,6 +2101,13 @@ def _scan_one_with_sector(ticker, sector, sector_ret, prefetch_hist=None):
             picks += _picks_from_puts(
                 ticker, r['company_name'], r['current_price'], sector, sector_ret,
                 vol_sig, r['top_puts'],
+                r.get('support_levels', []), r.get('resistance_levels', []),
+                trend_score=slow_t_score,
+            )
+        if r.get('top_spreads'):
+            picks += _picks_from_spreads(
+                ticker, r['company_name'], r['current_price'], sector, sector_ret,
+                vol_sig, r['top_spreads'],
                 r.get('support_levels', []), r.get('resistance_levels', []),
                 trend_score=slow_t_score,
             )
@@ -1842,16 +2143,38 @@ def _do_refresh():
         hist_map = {t: None for t in tickers}
 
     # ── Scan each ticker using pre-fetched history ────────────────────────────
+    # Hard deadline: never block the response more than 45 s.  Tickers that
+    # aren't done by then are silently skipped — the stale cache path means
+    # users get *something* rather than a spinner that never resolves.
+    SCAN_DEADLINE = time.time() + 45
     results = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         futs = {
             ex.submit(_scan_one_with_sector, t, sec, sector_perf.get(sec, 0.0), hist_map.get(t)): t
             for t, sec in scan_list
         }
-        for fut in as_completed(futs):
-            picks = fut.result()
-            if picks:
-                results.extend(picks)  # each ticker returns a list (one per DTE bucket)
+        try:
+            for fut in as_completed(futs, timeout=max(2, SCAN_DEADLINE - time.time())):
+                try:
+                    picks = fut.result(timeout=1)
+                    if picks:
+                        results.extend(picks)
+                except Exception:
+                    pass
+                if time.time() > SCAN_DEADLINE:
+                    logger.warning('Scan deadline — returning %d partial picks', len(results))
+                    break
+        except Exception:
+            # TimeoutError or other — collect whatever completed so far
+            logger.warning('Scan timeout — collecting %d partial picks from completed futures', len(results))
+            for fut in futs:
+                if fut.done():
+                    try:
+                        picks = fut.result(timeout=0)
+                        if picks:
+                            results.extend(picks)
+                    except Exception:
+                        pass
 
     results.sort(key=lambda x: x['confidence'], reverse=True)
     out = {
@@ -1870,11 +2193,18 @@ def _do_refresh():
 
 
 def _warmup():
-    time.sleep(4)
+    time.sleep(2)  # Give Flask a moment to bind, then start scanning immediately
+    with _picks_lock:
+        if _picks_cache['refreshing']:
+            return   # HTTP handler already started a scan — don't duplicate
+        _picks_cache['refreshing'] = True
     try:
         _do_refresh()
     except Exception as e:
         logger.warning('warmup err: %s', e)
+        with _picks_lock:
+            _picks_cache['refreshing'] = False
+        _picks_ready.set(); _picks_ready.clear()
 
 threading.Thread(target=_warmup, daemon=True).start()
 
@@ -1914,10 +2244,10 @@ def analyze_batch():
     for t in tickers:
         try:
             r = analyze_ticker(t)
-            if r.get('error') or not r.get('top_calls'):
+            if r.get('error') or (not r.get('top_calls') and not r.get('top_puts')):
                 results.append({'ticker': t, 'error': r.get('error', 'No options'), 'top_score': 0})
                 continue
-            top = r['top_calls'][0]
+            top = (r.get('top_calls') or r.get('top_puts'))[0]
             results.append({
                 'ticker': t,
                 'company_name': r['company_name'],
@@ -2015,26 +2345,40 @@ def get_news(ticker):
 
 @app.route('/api/best-picks')
 def best_picks():
+    """Return picks immediately — never block for more than 55 s total.
+    Rules:
+    1. Fresh cache → return immediately.
+    2. Scan in progress → wait up to 55 s; return whatever arrived (partial or full).
+       NEVER start a second scan while one is running.
+    3. No cache and no scan → start one in background, wait up to 55 s.
+    """
     with _picks_lock:
-        fresh = _picks_cache['data'] and (time.time() - _picks_cache['ts']) < PICKS_TTL
+        cached     = _picks_cache['data']
+        fresh      = cached and (time.time() - _picks_cache['ts']) < PICKS_TTL
+        refreshing = _picks_cache['refreshing']
+
         if fresh:
+            return jsonify(cached)
+
+        # Start a background scan only if none is running
+        if not refreshing:
+            _picks_cache['refreshing'] = True
+            threading.Thread(target=_do_refresh, daemon=True).start()
+
+        # Stale data available — return it right away; background scan will update cache
+        if cached:
+            stale = dict(cached)
+            stale['stale'] = True
+            return jsonify(stale)
+
+    # No cached data at all — wait for the background scan (capped at 55 s)
+    _picks_ready.wait(timeout=55)
+    with _picks_lock:
+        if _picks_cache['data']:
             return jsonify(_picks_cache['data'])
-        already = _picks_cache['refreshing']
-        if not already:
-            _picks_cache['refreshing'] = True
 
-    if already:
-        # A refresh is already running — wait for it instead of starting a second one
-        _picks_ready.wait(timeout=120)
-        with _picks_lock:
-            if _picks_cache['data']:
-                return jsonify(_picks_cache['data'])
-        # Timed out with no data — run it ourselves
-        with _picks_lock:
-            _picks_cache['refreshing'] = True
-
-    out = _do_refresh()
-    return jsonify(out)
+    # Still nothing after 55 s — return empty so the UI doesn't stay blank forever
+    return jsonify({'picks': [], 'scanned': 0, 'sector_perf': {}, 'updated_at': time.time(), 'stale': True})
 
 
 def _store_path():
@@ -2297,6 +2641,314 @@ def strategy_build():
         })
     except Exception as e:
         logger.exception('strategy_build'); return jsonify({'error': str(e)}), 500
+
+
+# ─── AI Chat Assistant ────────────────────────────────────────────────────────
+
+def _builtin_chat_reply(message: str, ctx: dict) -> str:
+    """Generate a contextual reply using live ticker data — no API key required."""
+    msg   = message.lower().strip()
+    tk    = ctx.get('ticker', '')
+    price = ctx.get('current_price', 0)
+    trend = ctx.get('trend', {})
+    ivr   = ctx.get('iv_rank', {})
+    pats  = ctx.get('chart_patterns', [])
+    sups  = (ctx.get('support_levels') or [])[:3]
+    ress  = (ctx.get('resistance_levels') or [])[:3]
+    calls = (ctx.get('top_calls') or [])[:3]
+    puts  = (ctx.get('top_puts') or [])[:3]
+    spreads = (ctx.get('top_spreads') or [])[:2]
+
+    def fmt(v): return f'${v:.2f}' if v else 'N/A'
+    def levels(lst): return ', '.join(fmt(l.get('price', l) if isinstance(l, dict) else l) for l in lst) if lst else 'N/A'
+
+    trend_dir   = trend.get('direction', 'neutral')
+    trend_label = trend.get('label', 'neutral')
+    trend_score = trend.get('score', 0)
+    ivr_rank    = ivr.get('rank')
+    ivr_interp  = ivr.get('interpretation', '')
+    pat_names   = [p.get('pattern', '') for p in pats]
+    bull_pats   = [p for p in pats if p.get('signal') == 'bullish']
+    bear_pats   = [p for p in pats if p.get('signal') == 'bearish']
+
+    # ── Trend / direction questions ────────────────────────────────────────────
+    if any(w in msg for w in ('trend', 'direction', 'bullish', 'bearish', 'going up', 'going down', 'outlook')):
+        sups_str = levels(sups)
+        ress_str = levels(ress)
+        pat_str  = ', '.join(pat_names) if pat_names else 'No patterns detected'
+        bias = ('📈 Bullish' if trend_score > 15 else '📉 Bearish' if trend_score < -15 else '↔ Neutral')
+        return (
+            f"{tk} is showing a **{trend_label}** trend (score {trend_score:+d}).\n\n"
+            f"Bias: {bias}\n"
+            f"Chart patterns: {pat_str}\n"
+            f"Support: {sups_str} | Resistance: {ress_str}\n\n"
+            f"⚠️ Trend signals are probabilistic — not guarantees. Always size positions to limit downside."
+        )
+
+    # ── IV / volatility questions ──────────────────────────────────────────────
+    if any(w in msg for w in ('implied vol', 'volatility', 'iv rank', 'expensive', 'cheap option')) or \
+            re.search(r'\biv\b', msg):
+        if ivr_rank is None:
+            return f"IV Rank data isn't available for {tk} yet — try re-analyzing the ticker."
+        action = ('selling premium (covered calls, credit spreads, iron condors)'
+                  if ivr_rank >= 60
+                  else 'buying premium (debit spreads, long calls/puts)'
+                  if ivr_rank <= 30
+                  else 'either buying or selling — IV is in the middle range')
+        return (
+            f"{tk}'s IV Rank is **{ivr_rank}** — {ivr_interp}.\n\n"
+            f"{'🔴 High IV' if ivr_rank >= 60 else '🟢 Low IV' if ivr_rank <= 30 else '🟡 Mid IV'}: "
+            f"This environment favors **{action}**.\n\n"
+            f"⚠️ IV can spike suddenly on earnings or macro news — check the calendar before entering."
+        )
+
+    # ── What is / explain / define — must come BEFORE data-lookup branches ──────
+    if any(w in msg for w in ('what is', 'what are', 'explain', 'define', 'how does', 'how do')):
+        if 'delta' in msg:
+            return "**Delta** measures how much an option's price changes for a $1 move in the stock. Delta 0.50 = ATM (50¢ per $1 move). Delta 0.70 = deeper ITM (70¢ per $1). Day traders usually want delta 0.40–0.70 for good leverage without paying full stock price."
+        if 'theta' in msg:
+            return "**Theta** is the daily time decay — the amount an option loses per day just from the passage of time. Theta works against buyers (you pay it) and benefits sellers (you collect it). Theta accelerates rapidly in the last 7–10 days before expiration."
+        if 'vega' in msg:
+            return "**Vega** measures an option's sensitivity to implied volatility changes. High vega = the option's price moves a lot when IV changes. Before earnings, vega inflates prices; after earnings, IV collapses (IV crush), deflating option values even if the stock moves your direction."
+        if 'gamma' in msg:
+            return "**Gamma** measures how fast delta changes as the stock moves. High gamma (ATM, short-dated options) means delta can shift rapidly — great for fast moves but dangerous if the stock reverses. 0DTE options have extremely high gamma."
+        if 'iv rank' in msg or 'iv percentile' in msg or re.search(r'\biv\b', msg):
+            return "**IV Rank** (IVR) tells you where current implied volatility sits within its 52-week range. IVR 80 = options are expensive (top 20% of the year). IVR 20 = cheap options. High IVR favors selling premium; low IVR favors buying premium."
+        if 'pop' in msg or 'probability' in msg:
+            return "**POP (Probability of Profit)** is the estimated chance the option finishes in-the-money at expiration, derived from the option's delta under Black-Scholes pricing. It assumes markets are fairly priced — it's a consensus estimate, not a guarantee."
+        if 'spread' in msg:
+            return "A **vertical spread** is buying one option and selling another at a different strike in the same expiry. It caps your max profit AND max loss. Debit spreads cost money upfront (you pay to enter). Credit spreads collect premium upfront. Both have defined, limited risk — ideal when IV is high."
+        if 'call' in msg:
+            return "A **call option** gives you the right (not obligation) to buy 100 shares at the strike price before expiration. You profit if the stock rises above the strike + premium paid. Max loss = premium paid. They're used for bullish directional plays."
+        if 'put' in msg:
+            return "A **put option** gives you the right (not obligation) to sell 100 shares at the strike price before expiration. You profit if the stock falls below the strike − premium paid. Max loss = premium paid. They're used for bearish directional plays or hedging."
+        if 'dte' in msg or 'expir' in msg:
+            return "**DTE (Days to Expiration)** is how many trading days until the option expires. Short DTE (0–7d) = high risk/reward, fast theta decay — used for day/swing trades. Longer DTE (30–60d) = more time for the trade to work, lower theta burn rate — better for multi-week positions."
+        if 'day trade' in msg or 'day trading' in msg:
+            return "**Day trading options** = entering and exiting the same day. Keys: tight bid-ask spread (you pay it twice), high volume (easy to exit), delta ≥ 0.35 (enough movement per stock move), DTE 0–5 (high gamma). MIN MOVE shown in the Day Trade tab = how far the stock must move just to cover your spread cost."
+        if 'iron condor' in msg:
+            return "An **iron condor** = sell OTM call + buy further OTM call (call spread) AND sell OTM put + buy further OTM put (put spread). You collect premium upfront and profit if the stock stays inside the short strikes at expiration. Max profit = premium collected; max loss = spread width − premium."
+        # Generic fallback for "what is X"
+        topic = msg.replace('what is', '').replace('what are', '').replace('explain', '').replace('define', '').strip()
+        return f"Ask me about a specific options concept — delta, theta, vega, gamma, IV rank, POP, spreads, calls, puts, DTE, day trading, or iron condors. You asked about: \"{topic}\""
+
+    # ── Best calls ─────────────────────────────────────────────────────────────
+    if any(w in msg for w in ('best call', 'top call', 'call option', 'calls', 'bullish play', 'buy call')):
+        if not calls:
+            return f"No top calls were found for {tk} in the current scan. Try re-analyzing or check a more liquid ticker."
+        lines = []
+        for c in calls:
+            lines.append(f"• {fmt(c.get('strike'))} strike, {c.get('expiry','?')} ({c.get('dte','?')}d) — Ask {fmt(c.get('ask'))}, Score {c.get('score','?')}")
+        sups_str = levels(sups)
+        return (
+            f"**Top calls for {tk}** (current price {fmt(price)}):\n\n"
+            + '\n'.join(lines) + '\n\n'
+            f"Support at {sups_str}. Look to enter on a break above the nearest resistance level.\n"
+            f"⚠️ Educational only — not financial advice."
+        )
+
+    # ── Best puts ──────────────────────────────────────────────────────────────
+    if any(w in msg for w in ('best put', 'top put', 'put option', 'puts', 'bearish play', 'buy put', 'short')):
+        if not puts:
+            return f"No top puts were found for {tk}. Try re-analyzing or switching to a more liquid ticker."
+        lines = []
+        for p in puts:
+            lines.append(f"• {fmt(p.get('strike'))} strike, {p.get('expiry','?')} ({p.get('dte','?')}d) — Ask {fmt(p.get('ask'))}, Score {p.get('score','?')}")
+        ress_str = levels(ress)
+        return (
+            f"**Top puts for {tk}** (current price {fmt(price)}):\n\n"
+            + '\n'.join(lines) + '\n\n'
+            f"Resistance at {ress_str}. Look to enter on a break below the nearest support level.\n"
+            f"⚠️ Educational only — not financial advice."
+        )
+
+    # ── Spreads ────────────────────────────────────────────────────────────────
+    if any(w in msg for w in ('spread', 'debit spread', 'credit spread', 'vertical', 'iron condor', 'defined risk')):
+        if not spreads:
+            return f"No spread picks were found for {tk}. Spreads require liquid options — try AAPL, SPY, or QQQ."
+        lines = []
+        for s in spreads:
+            net = s.get('net_cost', 0)
+            lines.append(
+                f"• {s.get('spread_type','?')} {s.get('direction','?')}: "
+                f"{fmt(s.get('long_strike'))} / {fmt(s.get('short_strike'))} — "
+                f"{'Debit' if net > 0 else 'Credit'} {fmt(abs(net))}, "
+                f"Max profit ${s.get('max_profit',0):.0f}, R/R {s.get('rr_ratio',0):.1f}:1"
+            )
+        return (
+            f"**Top vertical spreads for {tk}:**\n\n"
+            + '\n'.join(lines) + '\n\n'
+            f"Spreads cap your max loss — ideal when IV is elevated or you want defined risk.\n"
+            f"⚠️ Educational only — not financial advice."
+        )
+
+    # ── Chart patterns ─────────────────────────────────────────────────────────
+    if any(w in msg for w in ('pattern', 'chart', 'flag', 'breakout', 'double top', 'double bottom', 'head', 'setup')):
+        if not pats:
+            return f"No chart patterns were detected for {tk}. Analyze the ticker to load pattern data."
+        lines = [f"{'📈' if p.get('signal')=='bullish' else '📉' if p.get('signal')=='bearish' else '—'} **{p.get('pattern')}**: {p.get('description')}" for p in pats]
+        bias_str = f"{len(bull_pats)} bullish, {len(bear_pats)} bearish signal(s)"
+        return f"**Chart patterns for {tk}:**\n\n" + '\n'.join(lines) + f"\n\nOverall: {bias_str}.\n⚠️ Patterns are probabilistic — confirm with volume and trend before acting."
+
+    # ── Support / resistance ───────────────────────────────────────────────────
+    if any(w in msg for w in ('support', 'resistance', 'level', 'target', 'key level', 'where is')):
+        sups_str = levels(sups)
+        ress_str = levels(ress)
+        return (
+            f"**Key levels for {tk}** (trading at {fmt(price)}):\n\n"
+            f"Support: {sups_str}\n"
+            f"Resistance: {ress_str}\n\n"
+            f"Options strategy tip: Use support as a call entry trigger (break above) or put stop (break below)."
+        )
+
+    # ── Entry / when to enter ──────────────────────────────────────────────────
+    if any(w in msg for w in ('enter', 'entry', 'when to buy', 'when should i', 'buy now', 'good time')):
+        ress_str = levels(ress)
+        sups_str = levels(sups)
+        if trend_score > 15:
+            return (
+                f"{tk} is in an uptrend (score {trend_score:+d}). For calls, consider entering on a confirmed break above "
+                f"**{ress_str}** with volume confirmation.\n\n"
+                f"For puts, wait for a break below support at {sups_str}.\n"
+                f"⚠️ Never chase a move — wait for a confirmed level break."
+            )
+        elif trend_score < -15:
+            return (
+                f"{tk} is in a downtrend (score {trend_score:+d}). For puts, consider entering on a break below "
+                f"**{sups_str}**.\n\n"
+                f"For calls, be cautious — the trend is against you. Wait for a trend reversal signal.\n"
+                f"⚠️ Educational only — not financial advice."
+            )
+        else:
+            return (
+                f"{tk} is in a sideways/neutral trend. Directional plays are riskier here.\n\n"
+                f"Consider defined-risk plays like iron condors or straddles that profit from range-bound action.\n"
+                f"Key levels: Support {sups_str} | Resistance {ress_str}."
+            )
+
+    # ── Stop loss / risk management ────────────────────────────────────────────
+    if any(w in msg for w in ('stop', 'stop loss', 'risk', 'manage', 'how much', 'lose', 'loss')):
+        return (
+            f"**Risk management for {tk} options:**\n\n"
+            f"• **Stop-loss**: Exit if the option drops to 50% of what you paid (e.g. paid $1.00 → exit at $0.50)\n"
+            f"• **Take-profit**: Consider locking in gains at 2×–3× your premium (paid $1.00 → target $2.00–$3.00)\n"
+            f"• **Position size**: Risk no more than 1–3% of your account on any single trade\n"
+            f"• **Max daily loss**: Stop trading if down 5–6% on the day\n\n"
+            f"⚠️ Options can go to zero. Always size your positions so a 100% loss is acceptable."
+        )
+
+    # ── Summary / overview ─────────────────────────────────────────────────────
+    if any(w in msg for w in ('summary', 'overview', 'tell me about', 'analysis', 'what do you think', 'should i', 'trade this')):
+        sups_str = levels(sups)
+        ress_str = levels(ress)
+        pat_str  = ', '.join(pat_names) if pat_names else 'none detected'
+        ivr_str  = f"IVR {ivr_rank}" if ivr_rank is not None else 'IVR N/A'
+        top_pick = calls[0] if (trend_score >= 0 and calls) else (puts[0] if puts else None)
+        pick_str = ''
+        if top_pick:
+            side = 'call' if trend_score >= 0 else 'put'
+            pick_str = f"\nTop {side}: {fmt(top_pick.get('strike'))} strike, {top_pick.get('expiry','?')} — Ask {fmt(top_pick.get('ask'))}"
+        return (
+            f"**{tk} @ {fmt(price)} — Quick Analysis**\n\n"
+            f"Trend: {trend_label} (score {trend_score:+d})\n"
+            f"IV: {ivr_str} — {ivr_interp}\n"
+            f"Patterns: {pat_str}\n"
+            f"Support: {sups_str} | Resistance: {ress_str}"
+            + pick_str + '\n\n'
+            f"⚠️ This is educational analysis — not a buy/sell recommendation."
+        )
+
+    # ── Fallback ────────────────────────────────────────────────────────────────
+    sups_str = levels(sups)
+    ress_str = levels(ress)
+    return (
+        f"I can answer questions about **{tk}** using the live data I have loaded.\n\n"
+        f"Try asking:\n"
+        f"• \"What's the trend?\"\n"
+        f"• \"Best calls / best puts\"\n"
+        f"• \"What are the key levels?\"\n"
+        f"• \"Explain IV rank\" (or delta, theta, spreads, DTE…)\n"
+        f"• \"Give me a summary\"\n\n"
+        f"Current snapshot: {fmt(price)} | Trend: {trend_label} | Support: {sups_str} | Resistance: {ress_str}"
+    )
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat_assistant():
+    """AI chat assistant — built-in engine (no API key) or Anthropic API if key provided."""
+    try:
+        import urllib.request as urlreq
+        b       = request.get_json(force=True) or {}
+        message = b.get('message', '').strip()
+        api_key = b.get('api_key', '').strip()
+        ctx     = b.get('context', {})
+
+        if not message:
+            return jsonify({'error': 'No message provided'}), 400
+
+        # ── No API key → use built-in response engine ─────────────────────────
+        if not api_key:
+            reply = _builtin_chat_reply(message, ctx)
+            return jsonify({'reply': reply, 'source': 'builtin'})
+
+        # ── API key provided → call Anthropic ─────────────────────────────────
+        ticker  = ctx.get('ticker', 'N/A')
+        price   = ctx.get('current_price', 0)
+        trend   = ctx.get('trend', {})
+        ivr     = ctx.get('iv_rank', {})
+        pats    = ', '.join(p.get('pattern', '') for p in ctx.get('chart_patterns', [])) or 'None detected'
+        sups    = ', '.join(f"${s:.2f}" for s in (ctx.get('support_levels') or [])[:3]) or 'N/A'
+        ress    = ', '.join(f"${r:.2f}" for r in (ctx.get('resistance_levels') or [])[:3]) or 'N/A'
+
+        system_msg = f"""You are an expert options trading assistant inside Options Scout — a desktop app for analyzing stocks and options.
+
+Currently analyzing: {ticker} @ ${price:.2f}
+Trend: {trend.get('label', 'N/A')} (score {trend.get('score', 'N/A')})
+IV Rank: {ivr.get('rank', 'N/A')} — {ivr.get('interpretation', '')}
+Key supports: {sups}
+Key resistances: {ress}
+Chart patterns: {pats}
+
+Rules:
+- Be concise and actionable (2-4 sentences max unless detail is requested)
+- Reference the live data above when relevant
+- Always note that options trading involves significant risk
+- Never guarantee profits or give buy/sell recommendations
+- This is educational — not financial advice"""
+
+        payload = json.dumps({
+            'model': 'claude-3-5-haiku-20241022',
+            'max_tokens': 600,
+            'system': system_msg,
+            'messages': [{'role': 'user', 'content': message}]
+        }).encode('utf-8')
+
+        req = urlreq.Request(
+            'https://api.anthropic.com/v1/messages',
+            data=payload,
+            headers={
+                'x-api-key':            api_key,
+                'anthropic-version':    '2023-06-01',
+                'content-type':         'application/json',
+            }
+        )
+        try:
+            with urlreq.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+        except Exception as http_err:
+            err_str = str(http_err)
+            if '401' in err_str:
+                return jsonify({'error': 'Invalid API key — check your Anthropic key'}), 401
+            if '429' in err_str:
+                return jsonify({'error': 'API rate limited — wait a moment and try again'}), 429
+            raise
+
+        reply = (data.get('content') or [{}])[0].get('text', 'No response')
+        return jsonify({'reply': reply, 'source': 'anthropic'})
+
+    except Exception as e:
+        logger.exception('chat_assistant')
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

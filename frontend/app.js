@@ -121,6 +121,15 @@ let _allPicks = [];
 let _activeSector = null;
 let _lastSectorPerf = null;
 let _minPremium = 0;
+let _dayTradeFilter = false;
+
+function toggleDayTradeFilter() {
+  _dayTradeFilter = !_dayTradeFilter;
+  const btn = $('dayTradeFilterBtn');
+  btn.classList.toggle('dt-filter-active', _dayTradeFilter);
+  renderPicksTable(applyFilters(_allPicks));
+}
+window.toggleDayTradeFilter = toggleDayTradeFilter;
 
 // ── Level Watch / Price Alerts ────────────────────────────────────────────────
 // _watchedTickers: { TICKER: { supports, resistances, lastPrice, intervalId } }
@@ -295,6 +304,10 @@ function applyFilters(picks) {
   if (_minPremium > 0) out = out.filter(p => (p.ask || 0) >= _minPremium);
   if (_maxPremium > 0) out = out.filter(p => (p.ask || 0) <= _maxPremium);
   if (_dteFilter) out = out.filter(p => p.dte >= _dteFilter.min && p.dte <= _dteFilter.max);
+  if (_dayTradeFilter) {
+    out = out.filter(p => (p.dt_score || 0) > 0);
+    out = [...out].sort((a, b) => (b.dt_score || 0) - (a.dt_score || 0));
+  }
   return out;
 }
 
@@ -390,27 +403,51 @@ function renderPicksTable(picks) {
     const tr = document.createElement('tr');
     tr.className = i < 3 ? `rank-${i+1}` : '';
     const isPut     = pick.opt_type === 'put';
+    const isSpread  = pick.opt_type === 'spread';
+    const isBull    = isSpread ? pick.direction === 'bullish' : !isPut;
     const dteClass  = pick.dte <= 1 ? 'dte-urgent' : pick.dte > 21 ? 'dte-swing' : pick.dte > 7 ? 'dte-longer' : 'dte-good';
     const confPct   = Math.min(pick.confidence, 100);
     const confColor = confPct >= 80 ? 'var(--green)' : confPct >= 65 ? 'var(--blue)' : confPct >= 50 ? 'var(--yellow)' : 'var(--text3)';
     const otmStr    = pick.itm ? `<span class="itm-badge">ITM</span>` : '';
     const contractsFor500 = pick.ask > 0 ? Math.floor(500 / (pick.ask * 100)) : 0;
-    const cheapTag  = contractsFor500 >= 5 ? `<span class="cheap-tag">${contractsFor500}×$500</span>` : '';
+    const cheapTag  = (!isSpread && contractsFor500 >= 5) ? `<span class="cheap-tag">${contractsFor500}×$500</span>` : '';
     const sectorRet = pick.sector_return || 0;
     const sectorCls = sectorRet >= 2 ? 'heat-hot' : sectorRet >= 0.5 ? 'heat-warm' : sectorRet >= -0.5 ? 'heat-flat' : 'heat-cold';
     const sectorSign = sectorRet >= 0 ? '+' : '';
     const why = pick.conviction_reason || '';
 
     // Type badge
-    const typeBadge = isPut
-      ? `<span class="spread-bear" style="font-size:10px;padding:1px 6px">📉 Put</span>`
-      : `<span class="spread-bull" style="font-size:10px;padding:1px 6px">📈 Call</span>`;
+    const typeBadge = isSpread
+      ? (isBull
+          ? `<span class="spread-bull" style="font-size:10px;padding:1px 6px">↕ ${pick.spread_type}</span>`
+          : `<span class="spread-bear" style="font-size:10px;padding:1px 6px">↕ ${pick.spread_type}</span>`)
+      : isPut
+          ? `<span class="spread-bear" style="font-size:10px;padding:1px 6px">📉 Put</span>`
+          : `<span class="spread-bull" style="font-size:10px;padding:1px 6px">📈 Call</span>`;
 
-    // Entry signal — calls: break above resistance; puts: break below support
+    // Strike cell — spreads show long/short pair
+    const strikeCell = isSpread
+      ? `${fmt$(pick.long_strike)}<span style="color:var(--text3);font-size:10px"> / </span><span style="color:var(--text2)">${fmt$(pick.short_strike)}</span>`
+      : `<strong>${fmt$(pick.strike)}</strong>`;
+
+    // Mid cell — spreads show debit/credit label
+    const midCell = isSpread
+      ? ((pick.net_cost || 0) > 0
+          ? `<span class="spread-debit" style="font-weight:600;font-size:11px">D ${Math.abs(pick.net_cost || 0).toFixed(2)}</span>`
+          : `<span class="spread-credit" style="font-weight:600;font-size:11px">C +${Math.abs(pick.net_cost || 0).toFixed(2)}</span>`)
+      : `<span style="font-weight:600">${fmt$(pick.mid)}</span>`;
+
+    // Entry signal — calls: break above resistance; puts: break below support; spreads: breakeven
     const pickStep = pick.current_price >= 500 ? 10 : pick.current_price >= 100 ? 5 : 2.5;
     const pickRoundUnit = pickStep / 2;
     let entryCellHtml;
-    if (isPut) {
+    if (isSpread) {
+      const be = pick.breakeven || 0;
+      const rrStr = (pick.rr_ratio || 0).toFixed(1);
+      const mp = (pick.max_profit || 0).toFixed(0);
+      const ml = (pick.max_loss || 0).toFixed(0);
+      entryCellHtml = `<span class="entry-level-badge${isBull ? '' : ' entry-put'}" title="Breakeven: ${fmt$(be)} | R/R ${rrStr}:1 | Max +$${mp} / Max −$${ml}">BE ${fmt$(be)}</span>`;
+    } else if (isPut) {
       const supBelow = (pick.support_levels || []).filter(l => l < pick.current_price && l > pick.strike);
       const otmFrac  = (pick.current_price - pick.strike) / pick.current_price;
       const fraction = Math.min(0.15 + otmFrac * 1.5, 0.40);
@@ -438,6 +475,8 @@ function renderPicksTable(picks) {
         : `<span style="color:var(--text3);font-size:11px">—</span>`;
     }
 
+    const pickFitHtml = strategyFitHtml(pick);
+
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td>${typeBadge}</td>
@@ -445,10 +484,10 @@ function renderPicksTable(picks) {
       <td class="entry-cell">${entryCellHtml}</td>
       <td><span class="sec-chip ${sectorCls}">${shortSector(pick.sector || '')}<span>${sectorSign}${sectorRet.toFixed(1)}%</span></span></td>
       <td>${fmt$(pick.current_price)}</td>
-      <td><strong>${fmt$(pick.strike)}</strong></td>
+      <td>${strikeCell}</td>
       <td style="color:var(--text2)">${pick.expiry}</td>
       <td><span class="dte-chip ${dteClass}">${pick.dte}d</span></td>
-      <td style="font-weight:600">${fmt$(pick.mid)}</td>
+      <td>${midCell}</td>
       <td>
         <div class="conf-cell">
           <span class="conf-num" style="color:${confColor}">${confPct}%</span>
@@ -456,13 +495,17 @@ function renderPicksTable(picks) {
         </div>
       </td>
       <td><span class="conviction-badge ${convictionClass(pick.conviction)}" title="${why}">${pick.conviction}</span></td>
+      <td>${pickFitHtml}</td>
       <td class="why-cell" title="${why}">${why}</td>
       <td><button class="watch-btn${_watchedTickers[pick.ticker] ? ' watch-active' : ''}" data-t="${pick.ticker}" title="${_watchedTickers[pick.ticker] ? 'Watching — click to cancel' : 'Watch for level break'}">${_watchedTickers[pick.ticker] ? '🔔' : '🔕'}</button></td>
       <td><button class="btn-secondary picks-drill-btn" data-t="${pick.ticker}">Details →</button></td>`;
     tbody.appendChild(tr);
   });
   tbody.querySelectorAll('.picks-drill-btn').forEach(btn =>
-    btn.addEventListener('click', () => analyze(btn.dataset.t))
+    btn.addEventListener('click', () => {
+      $('tickerInput').value = btn.dataset.t;
+      analyze(btn.dataset.t);
+    })
   );
   tbody.querySelectorAll('.watch-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -669,8 +712,10 @@ function renderIndicators(t) {
 // ── Price Chart ──────────────────────────────────────────────────────────────
 function renderPriceChart(data) {
   const svg = $('priceChart');
-  const hist = data.price_history || [];
-  if (!hist.length) { svg.innerHTML = ''; return; }
+  const allHist = data.price_history || [];
+  if (!allHist.length) { svg.innerHTML = ''; return; }
+  const tf = TF_RANGES[_dashboardTF] || TF_RANGES.all;
+  const hist = allHist.slice(-tf.chartBars);
 
   const W = 320, H = 180, PAD = 8;
   const closes = hist.map(d => d.close);
@@ -720,6 +765,27 @@ function renderPriceChart(data) {
   `;
 }
 
+// ── Timeframe state ──────────────────────────────────────────────────────────
+let _dashboardTF = 'all';
+
+const TF_RANGES = {
+  all:      { dteMin: 0,  dteMax: 60, chartBars: 60, label: 'All'       },
+  weekly:   { dteMin: 0,  dteMax: 7,  chartBars: 5,  label: 'Weekly'    },
+  biweekly: { dteMin: 8,  dteMax: 14, chartBars: 10, label: 'Bi-Weekly' },
+  monthly:  { dteMin: 15, dteMax: 30, chartBars: 22, label: 'Monthly'   },
+  swing:    { dteMin: 31, dteMax: 60, chartBars: 45, label: 'Swing'     },
+};
+
+function setDashboardTF(tf) {
+  _dashboardTF = tf;
+  document.querySelectorAll('.tf-btn').forEach(btn =>
+    btn.classList.toggle('tf-active', btn.dataset.tf === tf)
+  );
+  reRenderOpts();
+  if (window._lastAnalysis) renderPriceChart(window._lastAnalysis);
+}
+window.setDashboardTF = setDashboardTF;
+
 // ── Sort + filter state ──────────────────────────────────────────────────────
 let _sortBy = null;
 let _sortDir = 'desc';
@@ -738,7 +804,7 @@ function resetFilters() {
   $('filterDelta').value = 0; $('filterPop').value = 0;
   $('filterLiq').value = 'C';
   $('filterMoneyness').value = 'all';
-  reRenderOpts();
+  setDashboardTF('all');
 }
 window.resetFilters = resetFilters;
 
@@ -750,6 +816,7 @@ function _applyFilters(opts) {
   const minLiq   = $('filterLiq').value || 'C';
   const moneyness = $('filterMoneyness')?.value || 'all';
   const liqRank = { A: 3, B: 2, C: 1, F: 0 };
+  const tf = TF_RANGES[_dashboardTF] || TF_RANGES.all;
 
   return opts.filter(o => {
     if ((o.open_interest || 0) < minOI) return false;
@@ -760,6 +827,7 @@ function _applyFilters(opts) {
     if (liqRank[o.liquidity] < liqRank[minLiq]) return false;
     if (moneyness === 'otm' && o.itm) return false;
     if (moneyness === 'itm' && !o.itm) return false;
+    if (_dashboardTF !== 'all' && (o.dte < tf.dteMin || o.dte > tf.dteMax)) return false;
     return true;
   });
 }
@@ -1024,6 +1092,12 @@ function renderOptions(opts, currentPrice, keyLevels, optType = 'calls') {
     // Plain-english explanation as title on score cell + click-to-show payoff
     const scoreTitle = (opt.plain || '').replace(/"/g, '&quot;');
 
+    // Strategy fit badge + Stop-Loss / Take-Profit
+    const fitHtml = strategyFitHtml(opt);
+    const sltp = computeStopTp(opt);
+    const stopCell   = sltp.stop  != null ? `<span class="sl-cell">−${fmt$(sltp.stop)}</span>`  : '—';
+    const tpCell     = sltp.tp    != null ? `<span class="tp-cell">+${fmt$(sltp.tp)}</span>`    : '—';
+
     tr.innerHTML = `
       <td>${i+1}</td>
       <td><span class="strike-val">${fmt$(opt.strike)}</span> ${otmStr} ${earnWarn}</td>
@@ -1045,6 +1119,9 @@ function renderOptions(opts, currentPrice, keyLevels, optType = 'calls') {
       <td title="${scoreTitle}"><div class="score-cell ${tier}"><span class="score-num">${opt.score}</span><div class="score-bar-track"><div class="score-bar-fill" style="width:${barPct}%"></div></div></div>
         <button class="payoff-toggle-btn" onclick="togglePayoff(${i}, '${optType}', '${tbodyId}')" title="Show/hide payoff diagram">📊</button>
       </td>
+      <td>${fitHtml}</td>
+      <td class="sizing-col">${stopCell}</td>
+      <td class="sizing-col">${tpCell}</td>
       <td>${buyCell}</td>
       <td>${costCell}</td>
       <td>${lossCell}</td>
@@ -1078,11 +1155,13 @@ function renderSpreadsFiltered() {
   const minRR   = parseFloat($('filterSpreadRR')?.value)  || 0;
   const minPOP  = parseFloat($('filterSpreadPop')?.value) || 0;
 
+  const tf = TF_RANGES[_dashboardTF] || TF_RANGES.all;
   const filtered = spreads.filter(s => {
     if (dir !== 'all' && s.direction !== dir) return false;
     if (stype !== 'all' && s.spread_type !== stype) return false;
     if ((s.rr_ratio || 0) < minRR) return false;
     if ((s.pop || 0) < minPOP) return false;
+    if (_dashboardTF !== 'all' && (s.dte < tf.dteMin || s.dte > tf.dteMax)) return false;
     return true;
   });
 
@@ -1197,6 +1276,81 @@ function renderSpreads(spreads, currentPrice, totalCount) {
   });
 }
 
+function renderDayTrade(picks, currentPrice) {
+  const tbody = $('dayTradeBody');
+  const noEl  = $('noDayTrade');
+  const countEl = $('dayTradeCount');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (!picks || !picks.length) {
+    noEl.classList.remove('hidden');
+    countEl.textContent = '0';
+    return;
+  }
+  noEl.classList.add('hidden');
+  countEl.textContent = picks.length;
+
+  picks.forEach((p, i) => {
+    const tr = document.createElement('tr');
+    tr.className = i < 3 ? `rank-${i + 1}` : '';
+
+    const isCall = p.opt_type === 'call';
+    const typeBadge = isCall
+      ? `<span class="spread-bull" style="font-size:10px;padding:1px 6px">📈 Call</span>`
+      : `<span class="spread-bear" style="font-size:10px;padding:1px 6px">📉 Put</span>`;
+
+    const bid = p.bid || 0;
+    const ask = p.ask || 0;
+    const mid = (bid + ask) / 2;
+    const delta = Math.abs((p.greeks?.delta) || 0);
+    const spreadPct = ask > 0 ? ((ask - bid) / mid * 100).toFixed(1) : '—';
+    const spreadColor = parseFloat(spreadPct) < 8 ? 'var(--green)' : parseFloat(spreadPct) < 15 ? 'var(--yellow)' : 'var(--red)';
+
+    // $/MOVE = delta × 100 (cents of premium movement per $1 stock move per contract)
+    const perMove = delta > 0 ? (delta * 100).toFixed(0) : '—';
+
+    // MIN MOVE = round-trip spread cost / delta = how far stock must move to cover spread
+    const roundTripCost = ask - bid;   // you buy at ask, sell at bid
+    const minMove = delta > 0 ? (roundTripCost / delta).toFixed(2) : '—';
+    const minMoveColor = parseFloat(minMove) < 1.00 ? 'var(--green)'
+                       : parseFloat(minMove) < 2.50 ? 'var(--yellow)' : 'var(--red)';
+
+    const dteClass = p.dte === 0 ? 'dte-urgent' : p.dte <= 2 ? 'dte-urgent' : p.dte <= 7 ? 'dte-good' : 'dte-longer';
+
+    // DT score bar (0-130 range typical)
+    const dtPct  = Math.min(Math.round(p.dt_score / 130 * 100), 100);
+    const dtColor = dtPct >= 70 ? 'var(--green)' : dtPct >= 45 ? 'var(--yellow)' : 'var(--text3)';
+
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td>${typeBadge}</td>
+      <td><strong>${fmt$(p.strike)}</strong></td>
+      <td style="color:var(--text2)">${p.expiry}</td>
+      <td><span class="dte-chip ${dteClass}">${p.dte}d</span></td>
+      <td>${fmt$(bid)}</td>
+      <td>${fmt$(ask)}</td>
+      <td style="font-weight:600">${fmt$(mid)}</td>
+      <td style="color:${(p.volume||0) >= 500 ? 'var(--green)' : 'var(--text2)'}">${(p.volume||0).toLocaleString()}</td>
+      <td style="font-weight:600">${delta.toFixed(2)}</td>
+      <td style="color:${spreadColor};font-weight:600">${spreadPct}%</td>
+      <td title="Premium changes ~$${perMove} per $1 stock move (per contract)">
+        <span style="color:var(--blue);font-weight:600">$${perMove}</span>
+      </td>
+      <td title="Stock must move $${minMove} in your direction just to cover round-trip spread">
+        <span style="color:${minMoveColor};font-weight:700">$${minMove}</span>
+      </td>
+      <td>
+        <div class="conf-cell">
+          <span class="conf-num" style="color:${dtColor}">${p.dt_score}</span>
+          <div class="conf-bar-track conf-bar-sm"><div class="conf-bar-fill" style="width:${dtPct}%;background:${dtColor}"></div></div>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+window.renderDayTrade = renderDayTrade;
+
 function renderVolume(vol) {
   $('volToday').textContent = fmtVol(vol.today);
   $('volAvg').textContent   = fmtVol(vol.avg);
@@ -1243,16 +1397,31 @@ function renderNews(items) {
   });
 }
 
+// Abort controller for the current in-flight analyze request
+let _analyzeAbort = null;
+
 async function analyze(ticker) {
   ticker = ticker.trim().toUpperCase();
   if (!ticker) return;
+
+  // Cancel any previous in-flight request so stale data never overwrites current
+  if (_analyzeAbort) { _analyzeAbort.abort(); }
+  _analyzeAbort = new AbortController();
+  const { signal } = _analyzeAbort;
+
+  // Reset timeframe to All for each new ticker
+  _dashboardTF = 'all';
+  document.querySelectorAll('.tf-btn').forEach(btn =>
+    btn.classList.toggle('tf-active', btn.dataset.tf === 'all')
+  );
+
   $('analyzeBtn').disabled = true;
   _entrySignalData = null;
   const esBanner = $('entrySignal');
   if (esBanner) esBanner.classList.add('hidden');
   showLoading('Fetching market data for ' + ticker + '…');
   try {
-    const res = await fetch(`/api/analyze/${ticker}`);
+    const res = await fetch(`/api/analyze/${ticker}`, { signal });
     const data = await res.json();
     if (data.error) {
       const isRateLimit = data.error.toLowerCase().includes('rate');
@@ -1310,10 +1479,14 @@ async function analyze(ticker) {
     renderEntrySignal(data.ticker, data.resistance_levels, data.support_levels, data.current_price);
     renderPutEntrySignal(data.ticker, data.support_levels, data.resistance_levels, data.current_price);
     renderSpreadsFiltered();
+    renderDayTrade(data.day_trade_picks || [], data.current_price);
+    renderChartPatterns(data.chart_patterns || []);
+    setChatContext(data);
     showDashboard();
 
     fetch(`/api/news/${ticker}`).then(r=>r.json()).then(nd=>renderNews(nd.news||[])).catch(()=>renderNews([]));
   } catch (err) {
+    if (err.name === 'AbortError') return;  // superseded by a newer request — do nothing
     showError('Network error: ' + err.message);
   } finally {
     $('analyzeBtn').disabled = false;
@@ -1661,11 +1834,239 @@ function initDisclaimer() {
   if (STORE.ui?.disclaimerHidden) $('disclaimerBar').classList.add('hidden');
 }
 
+// ── Strategy Builder ─────────────────────────────────────────────────────────
+
+let _strategy = { style: null, risk: null };   // in-memory (mirrors STORE.strategy)
+
+const STRATEGY_DESCRIPTIONS = {
+  day_trade:   'Short-term, 0–5 DTE plays. High delta, tight spreads, high volume.',
+  swing:       '1–4 week plays. Balanced delta, looks for trend continuation.',
+  scalping:    'Ultra-short entries and exits. Liquidity and volume are paramount.',
+  investing:   'Long-dated options / LEAPS. Lower risk, longer runway.',
+};
+
+const STRATEGY_IDEAL = {
+  day_trade:  { dteMax: 5,   dteMin: 0,  minDelta: 0.35, minVol: 500 },
+  swing:      { dteMax: 30,  dteMin: 5,  minDelta: 0.25, minVol: 100 },
+  scalping:   { dteMax: 3,   dteMin: 0,  minDelta: 0.40, minVol: 1000 },
+  investing:  { dteMax: 180, dteMin: 30, minDelta: 0.15, minVol: 50  },
+};
+
+const RISK_PREMIUM_CAPS = {
+  conservative: 1.50,
+  moderate:     3.50,
+  aggressive:   Infinity,
+};
+
+function getStrategyFit(pick) {
+  if (!_strategy.style) return null;
+  const ideal = STRATEGY_IDEAL[_strategy.style];
+  if (!ideal) return null;
+
+  const dte    = pick.dte || 0;
+  const delta  = Math.abs((pick.greeks?.delta) || (pick.delta) || 0);
+  const vol    = pick.volume || 0;
+  const ask    = pick.ask || 0;
+  const premCap = RISK_PREMIUM_CAPS[_strategy.risk] || Infinity;
+
+  let score = 0;
+  // DTE fit
+  if (dte >= ideal.dteMin && dte <= ideal.dteMax) score += 2;
+  else if (dte <= ideal.dteMax * 1.5)             score += 1;
+  // Delta fit
+  if (delta >= ideal.minDelta)                     score += 1;
+  // Volume fit
+  if (vol >= ideal.minVol)                         score += 1;
+  // Risk/premium fit
+  if (ask <= premCap)                              score += 1;
+
+  if (score >= 5) return { label: 'Ideal',     cls: 'fit-ideal'    };
+  if (score >= 3) return { label: 'Good',      cls: 'fit-good'     };
+  if (score >= 2) return { label: 'Not Ideal', cls: 'fit-notideal' };
+  return           { label: 'Poor',      cls: 'fit-poor'     };
+}
+
+function strategyFitHtml(pick) {
+  if (!_strategy.style) return '<span class="fit-badge fit-none" title="Set your strategy to get fit ratings">—</span>';
+  const f = getStrategyFit(pick);
+  return f ? `<span class="fit-badge ${f.cls}">${f.label}</span>` : '—';
+}
+
+function selectStrategyChip(group, val) {
+  const gridId = group === 'style' ? 'styleGrid' : 'riskGrid';
+  document.querySelectorAll(`#${gridId} .strategy-chip`).forEach(btn =>
+    btn.classList.toggle('strategy-chip-active', btn.dataset.val === val)
+  );
+  if (group === 'style') _strategy.style = val;
+  else                   _strategy.risk  = val;
+  updateStrategyPreview();
+}
+window.selectStrategyChip = selectStrategyChip;
+
+function updateStrategyPreview() {
+  const el = $('strategyPreview');
+  if (!el) return;
+  if (!_strategy.style && !_strategy.risk) { el.innerHTML = ''; return; }
+  const desc = STRATEGY_DESCRIPTIONS[_strategy.style] || '';
+  const risk = _strategy.risk ? `<strong>${_strategy.risk.charAt(0).toUpperCase() + _strategy.risk.slice(1)}</strong> risk` : '';
+  el.innerHTML = `<div class="strategy-preview-inner"><span class="fit-badge fit-ideal">Preview</span> ${risk}${risk && desc ? ' · ' : ''}${desc}</div>`;
+}
+
+function openStrategyModal() {
+  _strategy = { ...(STORE.strategy || {}) };
+  // Restore chip selections
+  ['styleGrid', 'riskGrid'].forEach(gridId => {
+    document.querySelectorAll(`#${gridId} .strategy-chip`).forEach(btn => {
+      const group = gridId === 'styleGrid' ? 'style' : 'risk';
+      btn.classList.toggle('strategy-chip-active', btn.dataset.val === _strategy[group]);
+    });
+  });
+  // Restore API key
+  const keyInput = $('anthropicKeyInput');
+  if (keyInput) keyInput.value = STORE.anthropicKey || '';
+  updateStrategyPreview();
+  $('strategyModal').classList.remove('hidden');
+}
+function closeStrategyModal() { $('strategyModal').classList.add('hidden'); }
+window.openStrategyModal = openStrategyModal;
+window.closeStrategyModal = closeStrategyModal;
+
+function saveStrategy() {
+  const keyInput = $('anthropicKeyInput');
+  if (keyInput?.value) STORE.anthropicKey = keyInput.value.trim();
+  STORE.strategy = { ..._strategy };
+  persistStore();
+  closeStrategyModal();
+  updateStrategyBtnText();
+  // Re-render dashboard if visible
+  if (window._lastAnalysis) reRenderOpts();
+}
+window.saveStrategy = saveStrategy;
+
+function updateStrategyBtnText() {
+  const t = $('strategyBtnText');
+  if (!t) return;
+  if (STORE.strategy?.style) {
+    const labels = { day_trade: 'Day Trade', swing: 'Swing', scalping: 'Scalping', investing: 'Investing' };
+    t.textContent = labels[STORE.strategy.style] || 'Strategy';
+  } else {
+    t.textContent = 'Strategy';
+  }
+}
+
+function openAnthropicDocs() {
+  if (window.electronAPI?.openExternal) window.electronAPI.openExternal('https://console.anthropic.com');
+  else window.open('https://console.anthropic.com', '_blank');
+}
+window.openAnthropicDocs = openAnthropicDocs;
+
+// ── Stop-Loss & Take-Profit ──────────────────────────────────────────────────
+
+function computeStopTp(opt) {
+  const premium = opt.ask || opt.mid || 0;
+  if (!premium) return { stop: null, tp: null };
+  const stopPct  = 0.50;   // 50% of premium = stop-loss
+  const tpPct    = 2.00;   // 200% of premium = take-profit (2× target)
+  return {
+    stop: parseFloat((premium * (1 - stopPct)).toFixed(2)),   // sell when worth 50% of entry
+    tp:   parseFloat((premium * tpPct).toFixed(2)),           // sell when worth 200% of entry
+  };
+}
+
+// ── Chart Pattern Rendering ──────────────────────────────────────────────────
+
+function renderChartPatterns(patterns) {
+  const el = $('chartPatternsCard');
+  if (!el) return;
+  if (!patterns || !patterns.length) {
+    el.innerHTML = '<div class="flow-row" style="color:var(--text3);font-size:12px">No patterns detected.</div>';
+    return;
+  }
+  el.innerHTML = patterns.map(p => {
+    const sigCls = p.signal === 'bullish' ? 'pat-bull' : p.signal === 'bearish' ? 'pat-bear' : 'pat-neutral';
+    const sigIcon = p.signal === 'bullish' ? '▲' : p.signal === 'bearish' ? '▼' : '—';
+    return `<div class="pattern-row">
+      <span class="pattern-signal ${sigCls}">${sigIcon}</span>
+      <div>
+        <div class="pattern-name">${p.pattern}</div>
+        <div class="pattern-desc">${p.description}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── AI Chat ───────────────────────────────────────────────────────────────────
+
+let _chatContext = null;   // current ticker analysis data
+
+function openChat() {
+  $('chatPanel').classList.remove('hidden');
+  $('chatInput').focus();
+}
+function closeChat() { $('chatPanel').classList.add('hidden'); }
+window.openChat = openChat;
+window.closeChat = closeChat;
+
+function setChatContext(data) {
+  _chatContext = data;
+  const tickerEl = $('chatTicker');
+  if (tickerEl && data) tickerEl.textContent = data.ticker;
+  // Show chat button once we have a ticker
+  const chatBtn = $('chatBtn');
+  if (chatBtn && data) chatBtn.classList.remove('hidden');
+}
+
+function appendChatBubble(text, role) {
+  const msgs = $('chatMessages');
+  const div = document.createElement('div');
+  div.className = `chat-bubble ${role}`;
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+async function sendChat() {
+  const input = $('chatInput');
+  const message = (input?.value || '').trim();
+  if (!message) return;
+
+  input.value = '';
+  input.disabled = true;
+  appendChatBubble(message, 'user');
+  const thinking = appendChatBubble('Thinking…', 'assistant thinking');
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        api_key: STORE.anthropicKey || '',   // optional — builtin engine works without it
+        context: _chatContext || {},
+      }),
+    });
+    const data = await res.json();
+    thinking.remove();
+    if (data.error) appendChatBubble('⚠️ ' + data.error, 'assistant');
+    else            appendChatBubble(data.reply, 'assistant');
+  } catch (err) {
+    thinking.remove();
+    appendChatBubble('⚠️ Network error: ' + err.message, 'assistant');
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
+window.sendChat = sendChat;
+
 // Load persistent store first, then initialize everything that depends on saved data
 async function init() {
   await initStore();
   SETTINGS = loadSettings();
+  _strategy = { ...(STORE.strategy || {}) };
   updatePortfolioBtnText();
+  updateStrategyBtnText();
   updateTradesBtnBadge();
   initDisclaimer();
   loadBestPicks();
