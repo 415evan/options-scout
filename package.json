@@ -1,6 +1,6 @@
 {
   "name": "options-scout",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Find this week's best call options — ranked by levels, S/R, volume, and live news.",
   "main": "electron/main.js",
   "author": "415evan",
@@ -27,14 +27,36 @@
       "!**/.DS_Store"
     ],
     "extraResources": [
-      { "from": "backend/dist/optionsscout-backend", "to": "backend-bin", "filter": ["**/*"] },
-      { "from": "frontend", "to": "frontend", "filter": ["**/*"] }
+      {
+        "from": "backend/dist/optionsscout-backend",
+        "to": "backend-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "frontend",
+        "to": "frontend",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.finance",
       "target": [
-        { "target": "dmg", "arch": ["arm64"] },
-        { "target": "zip", "arch": ["arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
       "icon": "build/icon.icns",
       "hardenedRuntime": false,
@@ -42,7 +64,14 @@
       "identity": "-"
     },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.ico",
       "artifactName": "Options-Scout-Setup-${version}.${ext}"
     },
@@ -53,11 +82,13 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "publish": [{
-      "provider": "github",
-      "owner": "415evan",
-      "repo": "options-scout"
-    }]
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "415evan",
+        "repo": "options-scout"
+      }
+    ]
   },
   "devDependencies": {
     "electron": "^31.0.0",
